@@ -57,3 +57,11 @@ export interface ChatEntry {
 	unreadCount: number
 	groupInfo?: GroupInfo
 }
+
+export type ActiveTab = 'chat' | 'stats' | 'debug'
+
+export interface DebugEvent {
+	timestamp: Date
+	event: string
+	summary: string
+}

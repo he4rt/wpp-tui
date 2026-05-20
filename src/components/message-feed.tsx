@@ -7,9 +7,10 @@ interface MessageFeedProps {
 	chatName: string | null
 	pollResults: Record<string, Record<string, string[]>>
 	maxLines: number
+	height: number
 }
 
-export function MessageFeed({ messages, selectedChat, chatName, pollResults, maxLines }: MessageFeedProps) {
+export function MessageFeed({ messages, selectedChat, chatName, pollResults, maxLines, height }: MessageFeedProps) {
 	const filtered = selectedChat
 		? messages.filter((m) => m.chat === selectedChat)
 		: messages
@@ -17,11 +18,11 @@ export function MessageFeed({ messages, selectedChat, chatName, pollResults, max
 	const visible = filtered.slice(-maxLines)
 
 	return (
-		<Box flexDirection="column" flexGrow={1} borderStyle="single" borderColor="blue" paddingX={1}>
+		<Box flexDirection="column" flexGrow={1} height={height} borderStyle="single" borderColor="blue" paddingX={1} overflow="hidden">
 			<Text bold underline>
 				MESSAGES{chatName ? ` — ${chatName}` : ' — all'}
 			</Text>
-			<Box flexDirection="column" marginTop={1} flexGrow={1}>
+			<Box flexDirection="column" marginTop={1}>
 				{visible.length === 0 && <Text dimColor>No messages yet...</Text>}
 				{visible.map((msg) => (
 					<Box key={msg.id} flexDirection="column">

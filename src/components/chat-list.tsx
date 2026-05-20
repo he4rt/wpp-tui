@@ -19,14 +19,14 @@ export function ChatList({ chats, selectedChat, maxItems }: ChatListProps) {
 	const visible = chats.slice(start, start + maxItems)
 
 	return (
-		<Box flexDirection="column" width={30} borderStyle="single" borderColor="gray" paddingX={1}>
+		<Box flexDirection="column" width={50} borderStyle="single" borderColor="gray" paddingX={1}>
 			<Text bold underline>CHATS</Text>
 			<Box flexDirection="column" marginTop={1}>
 				{visible.length === 0 && <Text dimColor>No chats yet...</Text>}
 				{visible.map((chat) => {
 					const isSelected = chat.jid === selectedChat
 					const icon = chat.chatType === 'group' ? '#' : '@'
-					const name = truncate(chat.name, 22)
+					const name = truncate(chat.name, 40)
 					const size = chat.groupInfo?.size
 					return (
 						<Box key={chat.jid}>

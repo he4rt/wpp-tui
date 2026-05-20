@@ -20,7 +20,44 @@ import { loadHistory } from '../history.js'
 import { logger } from '../logger.js'
 import { getMessage as getStoredMessage, storeMessage } from '../message-store.js'
 import { buildOptionHashMap, decryptPollVote } from '../poll-decrypt.js'
-import type { ChatEntry, ChatMessage, ConnectionStatus, GroupInfo, MessageContent } from '../types.js'
+import type { ChatEntry, ChatMessage, ConnectionStatus, DebugEvent, GroupInfo, MessageContent } from '../types.js'
+
+const MAX_DEBUG_EVENTS = 200
+
+function summarizeEvent(eventName: string, data: unknown): string {
+	try {
+		if (eventName === 'messages.upsert') {
+			const d = data as { messages?: Array<{ pushName?: string; message?: Record<string, unknown> }> }
+			const msg = d.messages?.[0]
+			if (!msg) return ''
+			const types = Object.keys(msg.message || {}).filter((k) => !['messageContextInfo', 'senderKeyDistributionMessage'].includes(k))
+			return `${msg.pushName || '?'}: ${types[0] || 'unknown'}`
+		}
+		if (eventName === 'connection.update') {
+			const d = data as Record<string, unknown>
+			if (d.connection) return `${d.connection}`
+			if (d.qr) return 'QR generated'
+			if (d.isOnline) return 'online'
+			return JSON.stringify(d).slice(0, 50)
+		}
+		if (eventName === 'presence.update') {
+			const d = data as { id?: string; presences?: Record<string, { lastKnownPresence?: string }> }
+			const who = Object.values(d.presences || {})[0]
+			return `${who?.lastKnownPresence || '?'} in ${d.id?.split('@')[0] || '?'}`
+		}
+		if (eventName === 'messages.reaction') {
+			const d = data as Array<{ reaction?: { text?: string } }>
+			return d[0]?.reaction?.text || ''
+		}
+		if (eventName === 'chats.update') {
+			const d = data as Array<{ id?: string }>
+			return d[0]?.id?.split('@')[0] || ''
+		}
+		return ''
+	} catch {
+		return ''
+	}
+}
 
 const msgRetryCounterCache = new NodeCache() as CacheStore
 
@@ -98,6 +135,8 @@ export function useSocket() {
 	const [chats, setChats] = useState<ChatEntry[]>(history.chats)
 	const [me, setMe] = useState<string>('')
 	const [pollResults, setPollResults] = useState<Record<string, Record<string, string[]>>>({})
+	const [debugEvents, setDebugEvents] = useState<DebugEvent[]>([])
+	const [connectedAt, setConnectedAt] = useState<Date | null>(null)
 	const sockRef = useRef<ReturnType<typeof makeWASocket> | null>(null)
 
 	useEffect(() => {
@@ -132,6 +171,11 @@ export function useSocket() {
 
 				for (const [eventName, eventData] of Object.entries(events)) {
 					saveEvent(eventName, eventData)
+					setDebugEvents((prev) => {
+						const entry: DebugEvent = { timestamp: new Date(), event: eventName, summary: summarizeEvent(eventName, eventData) }
+						const next = [...prev, entry]
+						return next.length > MAX_DEBUG_EVENTS ? next.slice(-MAX_DEBUG_EVENTS) : next
+					})
 				}
 
 				if (events['connection.update']) {
@@ -141,6 +185,7 @@ export function useSocket() {
 					if (connection === 'connecting') setStatus('connecting')
 					if (connection === 'open') {
 						setStatus('connected')
+						setConnectedAt(new Date())
 						setQrCode(null)
 						if (sock.user) setMe(sock.user.name || sock.user.id)
 						fetchGroupsMetadata(sock)
@@ -369,5 +414,5 @@ export function useSocket() {
 		await sockRef.current.sendMessage(jid, { text })
 	}
 
-	return { status, qrCode, messages, chats, me, pollResults, sendMessage }
+	return { status, qrCode, messages, chats, me, pollResults, debugEvents, connectedAt, sendMessage }
 }
