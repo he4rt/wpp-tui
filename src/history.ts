@@ -5,6 +5,31 @@ import type { ChatEntry, ChatMessage, MessageContent } from './types.js'
 
 const LOGS_DIR = path.resolve('logs')
 
+export function parseLogContent(content: string): Array<{ timestamp: string; data: unknown }> {
+	const trimmed = content.trim()
+	if (!trimmed) return []
+	// formato antigo: array JSON único
+	if (trimmed.startsWith('[')) {
+		try {
+			return JSON.parse(trimmed) as Array<{ timestamp: string; data: unknown }>
+		} catch {
+			// arquivo híbrido (array antigo + NDJSON novo) — cai pro parse por linha
+		}
+	}
+	// formato NDJSON: 1 objeto por linha
+	const out: Array<{ timestamp: string; data: unknown }> = []
+	for (const line of trimmed.split('\n')) {
+		const l = line.trim()
+		if (!l) continue
+		try {
+			out.push(JSON.parse(l) as { timestamp: string; data: unknown })
+		} catch {
+			// linha parcial/corrompida — ignora
+		}
+	}
+	return out
+}
+
 function readLogFiles(eventName: string): Array<{ timestamp: string; data: unknown }> {
 	const dir = path.join(LOGS_DIR, eventName)
 	if (!fs.existsSync(dir)) return []
@@ -14,8 +39,7 @@ function readLogFiles(eventName: string): Array<{ timestamp: string; data: unkno
 
 	for (const file of files) {
 		const content = fs.readFileSync(path.join(dir, file), 'utf-8')
-		const parsed = JSON.parse(content) as Array<{ timestamp: string; data: unknown }>
-		entries.push(...parsed)
+		entries.push(...parseLogContent(content))
 	}
 
 	return entries

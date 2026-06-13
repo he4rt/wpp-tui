@@ -2,7 +2,6 @@ import fs from 'fs'
 import path from 'path'
 
 const LOGS_DIR = path.resolve('logs')
-const WEBHOOK_URL = process.env.WEBHOOK_URL
 
 export function saveEvent(eventName: string, data: unknown) {
 	const sanitized = eventName.replace(/[^a-zA-Z0-9._-]/g, '_')
@@ -19,18 +18,6 @@ export function saveEvent(eventName: string, data: unknown) {
 		data,
 	}
 
-	let entries: unknown[] = []
-	if (fs.existsSync(filePath)) {
-		entries = JSON.parse(fs.readFileSync(filePath, 'utf-8'))
-	}
-	entries.push(entry)
-	fs.writeFileSync(filePath, JSON.stringify(entries, null, 2))
-
-	if (!WEBHOOK_URL) return
-
-	fetch(WEBHOOK_URL, {
-		method: 'POST',
-		headers: { 'Content-Type': 'application/json' },
-		body: JSON.stringify(entry),
-	}).catch(() => {})
+	// NDJSON: append O(1), sem reler o arquivo (aguenta o volume de presence.update)
+	fs.appendFileSync(filePath, JSON.stringify(entry) + '\n')
 }

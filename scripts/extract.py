@@ -30,12 +30,24 @@ LOGS_DIR = os.path.join(os.path.dirname(__file__), '..', 'logs')
 OUTPUT_DIR = os.path.join(os.path.dirname(__file__), '..', 'extracted')
 
 
+def _read_log_file(path: str) -> list:
+    """Read a log file in either the legacy JSON-array format or the current
+    NDJSON format (one object per line). Mirrors the backward-compatible
+    reader in src/history.ts."""
+    with open(path) as f:
+        content = f.read().strip()
+    if not content:
+        return []
+    if content.startswith('['):
+        return json.loads(content)
+    return [json.loads(line) for line in content.split('\n') if line.strip()]
+
+
 def load_events(event_name: str, date: str) -> list:
     path = os.path.join(LOGS_DIR, event_name, f'{date}.json')
     if not os.path.exists(path):
         return []
-    with open(path) as f:
-        return json.load(f)
+    return _read_log_file(path)
 
 
 def load_all_events(event_name: str) -> list:
@@ -46,8 +58,7 @@ def load_all_events(event_name: str) -> list:
     for f in sorted(os.listdir(dir_path)):
         if not f.endswith('.json'):
             continue
-        with open(os.path.join(dir_path, f)) as fh:
-            entries.extend(json.load(fh))
+        entries.extend(_read_log_file(os.path.join(dir_path, f)))
     return entries
 
 
@@ -313,6 +324,16 @@ def extract(date: str):
             stub_type = msg.get('messageStubType')
             stub_params = msg.get('messageStubParameters', [])
 
+            msg_obj = msg.get('message', {})
+            content = parse_message_content(msg_obj) if msg_obj else {'type': 'unknown'}
+
+            if stub_type is not None:
+                content = {'type': 'stub', 'stub_type': stub_type, 'stub_params': stub_params}
+
+            # protocol messages (history sync, key share, etc.) are system noise — skip entirely
+            if content['type'] == 'protocol':
+                continue
+
             register_user(participant, participant_alt, push_name, remote_jid if remote_jid.endswith('@g.us') else None)
 
             if remote_jid.endswith('@g.us'):
@@ -320,12 +341,6 @@ def extract(date: str):
                 groups[remote_jid]['members'].add(participant or participant_alt or '')
                 groups[remote_jid]['message_count'] += 1
                 groups[remote_jid]['last_activity'] = ts
-
-            msg_obj = msg.get('message', {})
-            content = parse_message_content(msg_obj) if msg_obj else {'type': 'unknown'}
-
-            if stub_type is not None:
-                content = {'type': 'stub', 'stub_type': stub_type, 'stub_params': stub_params}
 
             parsed_ts = datetime.fromtimestamp(int(msg_ts), tz=timezone.utc).isoformat() if msg_ts else ts
             sender = participant or participant_alt
