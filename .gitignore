@@ -9,9 +9,14 @@ wa-logs.txt
 logs
 extracted
 
+# Outbox (durable delivery queue)
+outbox.db
+outbox.db-*
+
 # Environment
 .env
 .env.*
+!.env.example
 
 # OS
 .DS_Store
