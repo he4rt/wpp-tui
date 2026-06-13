@@ -152,7 +152,7 @@ export function useSocket() {
 		let lastConnection = 'disconnected'
 
 		const webhookUrl = process.env.WEBHOOK_URL
-		const webhookSecret = process.env.WEBHOOK_SECRET
+		const webhookSecret = process.env.WHATSAPP_WEBHOOK_SECRET
 		const collectorOn = Boolean(webhookUrl && webhookSecret)
 		const outbox = collectorOn ? createOutbox(path.resolve('outbox.db')) : null
 		const router = outbox ? createEventRouter(outbox) : null

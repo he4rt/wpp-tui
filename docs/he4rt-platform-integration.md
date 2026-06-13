@@ -43,7 +43,7 @@ No repo do monolito (`he4rt-bot-api`), em `app-modules/integration-whatsapp/`:
 ```
 POST /api/webhooks/whatsapp
 Headers:
-  X-Signature: hmac-sha256(`${eventId}.${rawBody}`, WEBHOOK_SECRET)
+  X-Signature: hmac-sha256(`${eventId}.${rawBody}`, WHATSAPP_WEBHOOK_SECRET)
   X-Event-Id:  <UUIDv5 determinístico, por conteúdo>
 Body (JSON, CRU):
   { "type": "messages.upsert", "chat_jid": "120363xxx@g.us" | null, "payload": { ...evento Baileys cru... } }
