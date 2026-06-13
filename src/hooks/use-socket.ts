@@ -20,6 +20,11 @@ import { loadHistory } from '../history.js'
 import { logger } from '../logger.js'
 import { getMessage as getStoredMessage, storeMessage } from '../message-store.js'
 import { buildOptionHashMap, decryptPollVote } from '../poll-decrypt.js'
+import { startRetention } from '../retention.js'
+import { createOutbox } from '../collector/outbox.js'
+import { createEventRouter } from '../collector/event-router.js'
+import { startWebhookSender } from '../collector/webhook-sender.js'
+import { startHeartbeat } from '../collector/heartbeat.js'
 import type { ChatEntry, ChatMessage, ConnectionStatus, DebugEvent, GroupInfo, MessageContent } from '../types.js'
 
 const MAX_DEBUG_EVENTS = 200
@@ -142,19 +147,49 @@ export function useSocket() {
 	useEffect(() => {
 		let stopped = false
 
+		// última conexão conhecida — lida pelo heartbeat (o state `status` do React não é visível
+		// dentro deste closure de efeito) e atualizada no handler de connection.update.
+		let lastConnection = 'disconnected'
+
+		const webhookUrl = process.env.WEBHOOK_URL
+		const webhookSecret = process.env.WEBHOOK_SECRET
+		const collectorOn = Boolean(webhookUrl && webhookSecret)
+		const outbox = collectorOn ? createOutbox(path.resolve('outbox.db')) : null
+		const router = outbox ? createEventRouter(outbox) : null
+		const stopSender = outbox && webhookUrl && webhookSecret
+			? startWebhookSender(outbox, {
+				url: webhookUrl,
+				secret: webhookSecret,
+				onAlert: (kind, detail) => {
+					// auth/dead-letter são acionáveis (segredo dessincronizado, payload rejeitado) → error;
+					// overflow é aviso de fila crescendo → warn.
+					if (kind === 'overflow') {
+						logger.warn(detail, `coletor: outbox acima do limite`)
+					} else {
+						logger.error(detail, `coletor: alerta de envio (${kind})`)
+					}
+				},
+			})
+			: () => {}
+		const stopHeartbeat = outbox
+			? startHeartbeat({
+				outbox,
+				status: () => lastConnection,
+				log: (stats) => logger.info(stats, 'coletor: heartbeat'),
+			})
+			: () => {}
+		const stopRetention = startRetention((c) => logger.info(c, 'retention: arquivos podados'))
+
 		async function connect() {
 			const { state, saveCreds } = await useMultiFileAuthState('baileys_auth_info')
-
-			if (process.env.ADV_SECRET_KEY) {
-				state.creds.advSecretKey = process.env.ADV_SECRET_KEY
-			}
 
 			const { version } = await fetchLatestBaileysVersion()
 
 			const sock = makeWASocket({
 				version,
 				logger,
-				waWebSocketUrl: process.env.SOCKET_URL ?? DEFAULT_CONNECTION_CONFIG.waWebSocketUrl,
+				// `||` (not `??`) so an empty SOCKET_URL= in .env falls back to the default
+				waWebSocketUrl: process.env.SOCKET_URL || DEFAULT_CONNECTION_CONFIG.waWebSocketUrl,
 				auth: {
 					creds: state.creds,
 					keys: makeCacheableSignalKeyStore(state.keys, logger),
@@ -171,6 +206,7 @@ export function useSocket() {
 
 				for (const [eventName, eventData] of Object.entries(events)) {
 					saveEvent(eventName, eventData)
+					router?.handleEvent(eventName, eventData)
 					setDebugEvents((prev) => {
 						const entry: DebugEvent = { timestamp: new Date(), event: eventName, summary: summarizeEvent(eventName, eventData) }
 						const next = [...prev, entry]
@@ -182,8 +218,12 @@ export function useSocket() {
 					const update = events['connection.update']
 					const { connection, lastDisconnect, qr } = update
 
-					if (connection === 'connecting') setStatus('connecting')
+					if (connection === 'connecting') {
+						lastConnection = 'connecting'
+						setStatus('connecting')
+					}
 					if (connection === 'open') {
+						lastConnection = 'connected'
 						setStatus('connected')
 						setConnectedAt(new Date())
 						setQrCode(null)
@@ -192,6 +232,9 @@ export function useSocket() {
 					}
 					if (connection === 'close') {
 						const code = (lastDisconnect?.error as Boom)?.output?.statusCode
+						lastConnection = 'disconnected'
+						// alerta de desconexão (ADR-0003 §10): sessão caiu; o sender segura os eventos no outbox.
+						logger.warn({ code, willReconnect: !stopped && code !== DisconnectReason.loggedOut }, 'whatsapp: conexão caiu')
 						if (stopped) return
 						if (code === DisconnectReason.loggedOut) {
 							// clear auth so next connect generates a fresh QR
@@ -389,6 +432,9 @@ export function useSocket() {
 						cache[jid] = info
 						saveGroupCache(cache)
 
+						// envia o snapshot cru da metadata pro coletor (não vem como evento do socket)
+						router?.handleEvent('groups.metadata', meta)
+
 						setChats((prev) =>
 							prev.map((c) =>
 								c.jid === jid ? { ...c, name: info.subject, groupInfo: info } : c,
@@ -405,6 +451,10 @@ export function useSocket() {
 
 		return () => {
 			stopped = true
+			stopSender()
+			stopHeartbeat()
+			stopRetention()
+			outbox?.close()
 			sockRef.current?.end(undefined)
 		}
 	}, [])
