@@ -4,7 +4,6 @@ import fs from 'fs'
 import path from 'path'
 import makeWASocket, {
 	CacheStore,
-	DEFAULT_CONNECTION_CONFIG,
 	DisconnectReason,
 	fetchLatestBaileysVersion,
 	makeCacheableSignalKeyStore,
@@ -188,8 +187,6 @@ export function useSocket() {
 			const sock = makeWASocket({
 				version,
 				logger,
-				// `||` (not `??`) so an empty SOCKET_URL= in .env falls back to the default
-				waWebSocketUrl: process.env.SOCKET_URL || DEFAULT_CONNECTION_CONFIG.waWebSocketUrl,
 				auth: {
 					creds: state.creds,
 					keys: makeCacheableSignalKeyStore(state.keys, logger),
