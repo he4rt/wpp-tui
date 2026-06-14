@@ -1,0 +1,99 @@
+# ──────────────────────────────────────────────────────────────
+# wpp-tui — coletor WhatsApp em modo headless (systemd)
+#
+# Roda o coletor como serviço 24/7, sem TUI: conecta no WhatsApp via
+# Baileys, persiste os logs crus e empurra cada evento para o webhook
+# (Laravel / integration-whatsapp).  Veja docs/adr/0001 (núcleo único
+# extraído do React) e docs/adr/0002 (sessão pré-provisionada, sem QR).
+#
+# ── Instalação ──
+#   1. Build:        pnpm install && pnpm build
+#   2. Pré-provisione a sessão (ADR-0002): pareie UMA vez no Modo TUI
+#      (`pnpm dev`, leia o QR) e copie a pasta de auth para o server:
+#         scp -r ./baileys_auth_info usuario@server:/opt/wpp-tui/baileys_auth_info
+#      O headless NÃO exibe QR: se não houver sessão válida ele loga
+#      FATAL e sai com código ≠ 0 (o systemd sinaliza o problema).
+#   3. Configure o ambiente em /etc/whatsapp-collector.env
+#      (use o .env.example como base — WEBHOOK_URL e
+#      WHATSAPP_WEBHOOK_SECRET são OBRIGATÓRIAS no headless).
+#   4. Copie esta unit:
+#         sudo cp deploy/whatsapp-collector.service /etc/systemd/system/
+#         sudo systemctl daemon-reload
+#         sudo systemctl enable --now whatsapp-collector
+#   5. Acompanhe os logs (JSON na stdout → journald):
+#         journalctl -u whatsapp-collector -f
+#
+# Ajuste User/Group/WorkingDirectory para o seu deploy real.
+# ──────────────────────────────────────────────────────────────
+
+[Unit]
+# Descrição que aparece no `systemctl status`.
+Description=wpp-tui — coletor WhatsApp (headless)
+# Sobe depois da rede estar pronta (o coletor abre um WebSocket de saída).
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+# Type=simple: o processo do ExecStart É o serviço (não faz fork/daemonize).
+Type=simple
+
+# Usuário/grupo sem privilégios. Crie-os antes (ex.: `useradd -r -s /usr/sbin/nologin wpp`).
+# Evite rodar como root — o coletor não precisa.
+User=wpp
+Group=wpp
+
+# Diretório de trabalho: precisa conter `baileys_auth_info/` (a sessão
+# pré-provisionada) e é onde `outbox.db` e a pasta `logs/` serão criados.
+# É também a partir daqui que os paths relativos do app são resolvidos.
+WorkingDirectory=/opt/wpp-tui
+
+# Arquivo de ambiente. O `-` na frente torna-o opcional (não falha se sumir),
+# mas lembre-se: sem WEBHOOK_URL + WHATSAPP_WEBHOOK_SECRET o headless aborta
+# no boot por design (fail-fast).
+EnvironmentFile=-/etc/whatsapp-collector.env
+
+# Garante o modo headless mesmo que a env file não traga HEADLESS=1.
+Environment=HEADLESS=1
+
+# Logs em JSON na stdout (padrão do headless) caem no journald.
+# NÃO use LOG_PRETTY=1 em produção — só atrapalha o parsing do journal.
+ExecStart=/usr/bin/node dist/index.js --headless
+
+# Reinicia só em falha (saída ≠ 0). Saída 0 (shutdown gracioso via
+# SIGTERM) não reinicia. Reparear após `loggedOut` é manual (ADR-0002):
+# o processo sai ≠ 0 e o systemd vai retentar — provisione a sessão de novo.
+Restart=on-failure
+# Backoff entre tentativas, para não martelar o WhatsApp em loop.
+RestartSec=5s
+
+# Janela do contador de falhas e teto de reinícios dentro dela.
+# Acima disso o systemd marca a unit como `failed` e para de tentar.
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+# SIGTERM dispara o shutdown gracioso (fecha outbox/SQLite + encerra o socket).
+KillSignal=SIGTERM
+# Tempo para o shutdown gracioso terminar antes do SIGKILL. O app já tem um
+# force-exit interno (~10s); damos uma folga a mais aqui.
+TimeoutStopSec=15s
+
+# ── Hardening (descomente conforme o seu ambiente permitir) ──
+# Reduz a superfície de ataque do serviço. Teste antes de habilitar tudo:
+# algumas opções podem bloquear escrita em paths inesperados.
+#NoNewPrivileges=true
+#ProtectSystem=strict
+#ProtectHome=true
+# Permite escrita só no WorkingDirectory (baileys_auth_info, outbox.db, logs/).
+#ReadWritePaths=/opt/wpp-tui
+#PrivateTmp=true
+#ProtectKernelTunables=true
+#ProtectKernelModules=true
+#ProtectControlGroups=true
+#RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+#RestrictNamespaces=true
+#LockPersonality=true
+#MemoryDenyWriteExecute=true
+
+[Install]
+# Habilita no boot via `systemctl enable`.
+WantedBy=multi-user.target

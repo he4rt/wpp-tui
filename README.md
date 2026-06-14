@@ -87,6 +87,80 @@ Optionally forward all events to an external webhook:
 WEBHOOK_URL=https://your-webhook.example.com pnpm dev
 ```
 
+## Modo headless
+
+Para rodar o coletor como serviço 24/7 (sem TUI, ex.: num server via systemd),
+use o **Modo headless**. Ele reaproveita o mesmo núcleo de conexão da TUI
+(`startCollectorCore`, ver [`docs/adr/0001`](docs/adr/0001-collector-core-extraido-do-react.md)):
+uma única fonte de verdade para os dois modos.
+
+```bash
+pnpm build              # gera dist/
+pnpm start:headless     # = node --env-file-if-exists=.env dist/index.js --headless
+```
+
+O modo é ativado por `--headless` na linha de comando **ou** pela env
+`HEADLESS=1` (aceita `1`/`true`/`yes`). Sem nenhum dos dois, o `dist/index.js`
+sobe a TUI normalmente.
+
+### Pré-provisionar a sessão (sem QR)
+
+O headless **não exibe QR** nem faz pairing-code (ver
+[`docs/adr/0002`](docs/adr/0002-headless-pre-provisiona-auth.md)). Ele exige uma
+sessão já pareada:
+
+1. Pareie **uma vez** no Modo TUI (`pnpm dev`) lendo o QR no celular.
+2. Copie a pasta `baileys_auth_info/` para o `WorkingDirectory` do server:
+   ```bash
+   scp -r ./baileys_auth_info usuario@server:/opt/wpp-tui/baileys_auth_info
+   ```
+
+Se o headless receber um evento de QR (sinal de que não há sessão válida), ele
+loga **FATAL** (`sem sessão válida; pré-provisione baileys_auth_info`) e sai com
+código ≠ 0 — em vez de ficar gerando QRs num loop. Um `loggedOut` no server
+também derruba o coletor: é preciso re-provisionar a sessão manualmente.
+
+### Variáveis obrigatórias
+
+No headless, `WEBHOOK_URL` **e** `WHATSAPP_WEBHOOK_SECRET` são **obrigatórias**.
+Se faltar qualquer uma, o processo loga FATAL e sai com código ≠ 0 **antes** de
+conectar (fail-fast). No Modo TUI o coletor continua opcional. Veja o
+[`.env.example`](.env.example) para todas as variáveis.
+
+### Logs (JSON na stdout)
+
+O headless emite logs em **JSON na stdout** por padrão (ideal para journald).
+Defina `LOG_PRETTY=1` para formato legível via `pino-pretty` (debug local).
+Não escreve `wa-logs.txt` a menos que `WA_LOG_FILE` seja definido explicitamente.
+
+Há **dois loggers**, controlados separadamente, e toda linha carrega um campo
+`component` (`whatsapp` / `collector` / `retention` / `baileys`):
+
+| Variável | Logger | Padrão |
+|---|---|---|
+| `LOG_LEVEL` | app / coletor | `info` |
+| `BAILEYS_LOG_LEVEL` | protocolo Baileys (barulhento) | `warn` |
+
+Se `LOG_RETENTION_DAYS` estiver ausente/0, o boot emite um **WARN** alertando
+sobre crescimento ilimitado de disco.
+
+### Deploy via systemd
+
+Há uma unit pronta em [`deploy/whatsapp-collector.service`](deploy/whatsapp-collector.service)
+(com comentários explicando cada diretiva e o passo de pré-provisionamento):
+
+```bash
+sudo cp deploy/whatsapp-collector.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now whatsapp-collector
+
+# Ler os logs (a saída JSON cai no journald):
+journalctl -u whatsapp-collector -f
+```
+
+O sinal de saúde é a linha de **heartbeat** dos logs (não há endpoint HTTP
+`/health` nesta versão).
+
 ## Keyboard Shortcuts
 
 | Key | Action |
@@ -104,7 +178,8 @@ WEBHOOK_URL=https://your-webhook.example.com pnpm dev
 ```bash
 pnpm dev              # dev server with hot reload
 pnpm build            # production build with tsup
-pnpm start            # run production build
+pnpm start            # run production build (TUI)
+pnpm start:headless   # run production build in headless mode (collector, no TUI)
 pnpm typecheck        # type check without emitting
 make extract-payload  # extract structured data from logs
 ```
@@ -113,17 +188,32 @@ make extract-payload  # extract structured data from logs
 
 ```
 src/
-├── index.tsx              # entry point — renders Ink app
+├── index.tsx              # entry point — routes to TUI or headless (dynamic import)
 ├── app.tsx                # tab system, keyboard handling, layout
+├── app-render.tsx         # TUI renderer (extracted from index.tsx for dynamic import)
+├── headless.ts            # headless runner — bootstraps the collector core without UI
+├── logging.ts             # logger factory (app + baileys loggers with component tags)
+├── logger.ts              # legacy pino logger (file output, used by the TUI)
 ├── types.ts               # shared TypeScript types
-├── logger.ts              # pino logger (file output)
 ├── event-logger.ts        # persists raw events to disk + optional webhook
 ├── history.ts             # loads message history from logs on startup
-├── message-store.ts       # persists raw messages for poll decryption
+├── message-store.ts       # persists raw messages for poll decryption (TUI-only)
 ├── group-cache.ts         # caches group metadata to disk
 ├── poll-decrypt.ts        # AES-256-GCM poll vote decryption
+├── retention.ts           # periodic cleanup of old raw logs
+├── collector/
+│   ├── core.ts            # collector core (connection, auth, routing) — shared by TUI + headless
+│   ├── headless-config.ts # environment resolution for headless mode (fail-fast validation)
+│   ├── shutdown.ts        # graceful shutdown handler (SIGTERM/SIGINT + force-exit timeout)
+│   ├── outbox.ts          # SQLite event queue
+│   ├── event-router.ts    # routes events to the collector outbox
+│   ├── webhook-sender.ts  # sends queued events to the webhook
+│   ├── heartbeat.ts       # periodic health signal
+│   ├── extractors.ts      # event data extraction helpers
+│   ├── helpers.ts         # collector utility functions
+│   └── types.ts           # collector-specific types
 ├── hooks/
-│   └── use-socket.ts      # React hook wrapping Baileys socket
+│   └── use-socket.ts      # React hook wrapping the collector core (TUI-only: storeMessage, parseContent, dedup)
 └── components/
     ├── header.tsx          # status bar with tab navigation
     ├── chat-list.tsx       # sidebar with groups/DMs

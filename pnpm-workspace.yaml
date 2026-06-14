@@ -1,5 +1,15 @@
+packages:
+  - .
+
 allowBuilds:
-  '@whiskeysockets/baileys': true
-  esbuild: false
+  '@whiskeysockets/baileys': set this to true or false
+  better-sqlite3: true
+  esbuild: true
   protobufjs: true
-  sharp: true
+  sharp: set this to true or false
+
+onlyBuiltDependencies:
+  - '@whiskeysockets/baileys'
+  - protobufjs
+  - sharp
+  - better-sqlite3

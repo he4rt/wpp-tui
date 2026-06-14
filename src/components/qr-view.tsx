@@ -20,7 +20,11 @@ export function QrView({ qrCode }: QrViewProps) {
 			{lines.length === 0 ? (
 				<Text dimColor>Generating QR code...</Text>
 			) : (
-				lines.map((line, i) => <Text key={i}>{line}</Text>)
+				lines.map((line, i) => (
+					<Text key={i} backgroundColor="white" color="black">
+						{line}
+					</Text>
+				))
 			)}
 			<Box paddingTop={1}>
 				<Text dimColor>Scan with WhatsApp {'>'} Settings {'>'} Linked Devices</Text>

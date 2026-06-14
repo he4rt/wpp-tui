@@ -11,9 +11,10 @@ interface MessageFeedProps {
 }
 
 export function MessageFeed({ messages, selectedChat, chatName, pollResults, maxLines, height }: MessageFeedProps) {
-	const filtered = selectedChat
-		? messages.filter((m) => m.chat === selectedChat)
-		: messages
+	// protocol messages (history sync, key share, etc.) are system noise — hide them from the feed
+	const filtered = messages.filter(
+		(m) => m.content.type !== 'protocol' && (!selectedChat || m.chat === selectedChat),
+	)
 
 	const visible = filtered.slice(-maxLines)
 
