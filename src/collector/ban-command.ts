@@ -38,3 +38,14 @@ export function parseBanCommand(text: string): boolean {
 	const first = text.trim().split(/\s+/)[0]
 	return first?.toLowerCase() === '/ban'
 }
+
+// Alvo do ban: reply (autor da msg citada) tem prioridade; senão, o primeiro mencionado.
+// Reply é detectado por stanzaId + participant juntos (evita falsos positivos de contextInfo).
+export function resolveBanTarget(msg: BanMessage): string | null {
+	const ctx = msg.message?.extendedTextMessage?.contextInfo
+	if (!ctx) return null
+	if (ctx.stanzaId && ctx.participant) return ctx.participant
+	const mentioned = ctx.mentionedJid
+	if (mentioned && mentioned.length > 0) return mentioned[0]
+	return null
+}
