@@ -15,6 +15,13 @@ test('parseBanCommand: rejeita o que não é o comando', () => {
 	}
 })
 
+test('parseBanCommand: aceita ! como prefixo', () => {
+	for (const t of ['!ban', '!BAN', '!ban @Fulano']) {
+		assert.equal(parseBanCommand(t), true, `deveria aceitar: "${t}"`)
+	}
+	assert.equal(parseBanCommand('!bandido'), false)
+})
+
 test('messageText: lê conversation', () => {
 	const msg: BanMessage = { message: { conversation: '/ban' } }
 	assert.equal(messageText(msg), '/ban')

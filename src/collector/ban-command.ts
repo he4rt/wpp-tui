@@ -3,42 +3,15 @@
 // o único feedback é a mensagem de sistema nativa do WhatsApp. Toda tentativa é auditada via log.
 
 import { jidNormalizedUser } from '@whiskeysockets/baileys'
+import { messageText, parseCommand, isAdmin, type CmdMessage } from './command-core.js'
 
-// Shapes mínimos das mensagens do Baileys que o comando precisa — mantidos locais para os testes
-// usarem objetos simples. A WAMessage real do Baileys é estruturalmente compatível.
-export interface BanContextInfo {
-	participant?: string | null // autor da msg citada (presente em replies)
-	stanzaId?: string | null // id da msg citada (presente em replies)
-	mentionedJid?: string[] | null // JIDs mencionados com @
-}
-export interface BanMessageContent {
-	conversation?: string | null
-	extendedTextMessage?: { text?: string | null; contextInfo?: BanContextInfo | null } | null
-}
-export interface BanMessageKey {
-	remoteJid?: string | null
-	participant?: string | null
-	id?: string | null
-}
-export interface BanMessage {
-	key?: BanMessageKey | null
-	message?: BanMessageContent | null
-}
+// Compat: BanMessage é o shape genérico de mensagem compartilhado (command-core).
+export type BanMessage = CmdMessage
+export { messageText }
 
-// Texto da mensagem: conversation (texto puro) ou extendedTextMessage.text (reply/menção).
-export function messageText(msg: BanMessage): string {
-	const m = msg.message
-	if (!m) return ''
-	if (typeof m.conversation === 'string') return m.conversation
-	const ext = m.extendedTextMessage?.text
-	return typeof ext === 'string' ? ext : ''
-}
-
-// Detecta o comando pelo PRIMEIRO token (case-insensitive). Por token, não match exato,
-// porque na menção o texto vem como "/ban @Fulano".
+// Detecta o comando /ban — aceita "/ban" e "!ban" (case-insensitive) pelo primeiro token.
 export function parseBanCommand(text: string): boolean {
-	const first = text.trim().split(/\s+/)[0]
-	return first?.toLowerCase() === '/ban'
+	return parseCommand(text)?.name === 'ban'
 }
 
 // Alvo do ban: reply (autor da msg citada) tem prioridade; senão, o primeiro mencionado.
@@ -84,10 +57,6 @@ export interface BanUpsert {
 
 export function createBanHandler(deps: { sock: BanSocket; logger: BanLogger }) {
 	const { sock, logger } = deps
-
-	function isAdmin(p?: BanParticipant): boolean {
-		return p?.admin === 'admin' || p?.admin === 'superadmin'
-	}
 
 	async function handleMessage(msg: BanMessage): Promise<void> {
 		const groupJid = msg.key?.remoteJid
