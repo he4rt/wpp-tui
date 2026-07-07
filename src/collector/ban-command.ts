@@ -1,9 +1,11 @@
 // Comando de moderação /ban: parse do comando, resolução do alvo e execução da remoção.
 // Vive no núcleo do coletor (roda em produção headless). Bot 100% silencioso: nunca responde —
 // o único feedback é a mensagem de sistema nativa do WhatsApp. Toda tentativa é auditada via log.
+// A casca (loop best-effort, guarda de grupo/notify, audit, autorização) vem de command-handler.
 
 import { jidNormalizedUser } from '@whiskeysockets/baileys'
 import { messageText, parseCommand, isAdmin, type CmdMessage } from './command-core.js'
+import { createCommandHandler, requireGroupAdmin, type CommandContext, type CommandLogger } from './command-handler.js'
 
 // Compat: BanMessage é o shape genérico de mensagem compartilhado (command-core).
 export type BanMessage = CmdMessage
@@ -47,81 +49,49 @@ export interface BanSocket {
 	groupParticipantsUpdate(jid: string, jids: string[], action: 'remove'): Promise<BanUpdateResult[]>
 	communityParticipantsUpdate(jid: string, jids: string[], action: 'remove'): Promise<BanUpdateResult[]>
 }
-export interface BanLogger {
-	info(obj: Record<string, unknown>, msg?: string): void
-}
-export interface BanUpsert {
-	type: string
-	messages: BanMessage[]
-}
 
-export function createBanHandler(deps: { sock: BanSocket; logger: BanLogger }) {
-	const { sock, logger } = deps
+// Domínio do /ban: resolve o alvo (entrada) → autoriza → guardrails → remoção. A ordem entrada→auth
+// é preservada porque requireGroupAdmin é chamado só depois de resolver/validar o alvo.
+const banDomain = async ({ msg, groupJid, actor, sock, audit }: CommandContext<BanSocket>): Promise<void> => {
+	const targetRaw = resolveBanTarget(msg)
+	// o audit do ban carrega `target` em todo log (como antes): embrulha o audit base uma vez.
+	const auditBan: typeof audit = (result, extra = {}) => audit(result, { target: targetRaw, ...extra })
 
-	async function handleMessage(msg: BanMessage): Promise<void> {
-		const groupJid = msg.key?.remoteJid
-		if (!groupJid || !groupJid.endsWith('@g.us')) return // só grupos
-		if (!parseBanCommand(messageText(msg))) return // só o comando /ban
+	if (!targetRaw) { auditBan('no_target'); return }
+	const meta = await requireGroupAdmin<BanGroupMetadata>({ sock, groupJid, actor, audit: auditBan })
+	if (!meta) return // já auditou not_admin / metadata_error
 
-		const actor = msg.key?.participant ? jidNormalizedUser(msg.key.participant) : ''
-		const targetRaw = resolveBanTarget(msg)
-		const audit = (result: string, extra: Record<string, unknown> = {}) =>
-			logger.info({ actor, target: targetRaw, group: groupJid, result, ...extra }, 'ban: tentativa')
+	const target = jidNormalizedUser(targetRaw)
+	const participants = meta.participants || []
+	const findP = (jid: string) => participants.find((p) => jidNormalizedUser(p.id) === jid)
 
-		if (!targetRaw) { audit('no_target'); return }
-		const target = jidNormalizedUser(targetRaw)
+	// guardrails
+	if (target === actor) { auditBan('self_ban'); return }
+	const targetP = findP(target)
+	if (!targetP) { auditBan('target_not_member'); return }
+	if (isAdmin(targetP)) { auditBan('target_is_admin'); return }
+	if (meta.owner && jidNormalizedUser(meta.owner) === target) { auditBan('target_is_owner'); return }
 
-		let meta: BanGroupMetadata
-		try {
-			meta = await sock.groupMetadata(groupJid)
-		} catch (err) {
-			audit('metadata_error', { err: String(err) }); return
+	// remoção
+	try {
+		let res: BanUpdateResult[]
+		if (meta.linkedParent) {
+			// proteção extra: o dono da COMUNIDADE pode diferir do owner do subgrupo
+			try {
+				const parent = await sock.groupMetadata(meta.linkedParent)
+				if (parent.owner && jidNormalizedUser(parent.owner) === target) { auditBan('target_is_owner'); return }
+			} catch { /* sem a metadata do pai, segue sem essa checagem extra */ }
+			// communityParticipantsUpdate com 'remove' manda linked_groups:true → sai da comunidade + subgrupos
+			res = await sock.communityParticipantsUpdate(meta.linkedParent, [targetP.id], 'remove')
+		} else {
+			res = await sock.groupParticipantsUpdate(groupJid, [targetP.id], 'remove')
 		}
-
-		const participants = meta.participants || []
-		const findP = (jid: string) => participants.find((p) => jidNormalizedUser(p.id) === jid)
-
-		// autorização: quem mandou precisa ser admin/superadmin do grupo
-		if (!isAdmin(findP(actor))) { audit('not_admin'); return }
-
-		// guardrails
-		if (target === actor) { audit('self_ban'); return }
-		const targetP = findP(target)
-		if (!targetP) { audit('target_not_member'); return }
-		if (isAdmin(targetP)) { audit('target_is_admin'); return }
-		if (meta.owner && jidNormalizedUser(meta.owner) === target) { audit('target_is_owner'); return }
-
-		// remoção
-		try {
-			let res: BanUpdateResult[]
-			if (meta.linkedParent) {
-				// proteção extra: o dono da COMUNIDADE pode diferir do owner do subgrupo
-				try {
-					const parent = await sock.groupMetadata(meta.linkedParent)
-					if (parent.owner && jidNormalizedUser(parent.owner) === target) { audit('target_is_owner'); return }
-				} catch { /* sem a metadata do pai, segue sem essa checagem extra */ }
-				// communityParticipantsUpdate com 'remove' manda linked_groups:true → sai da comunidade + subgrupos
-				res = await sock.communityParticipantsUpdate(meta.linkedParent, [targetP.id], 'remove')
-			} else {
-				res = await sock.groupParticipantsUpdate(groupJid, [targetP.id], 'remove')
-			}
-			audit('removed', { status: res?.[0]?.status ?? 'unknown', community: meta.linkedParent ?? null })
-		} catch (err) {
-			audit('remove_error', { err: String(err) })
-		}
-	}
-
-	return {
-		// best-effort: nunca lança (não pode derrubar a coleta). Cada msg do lote é tratada isolada.
-		async handle(upsert: BanUpsert): Promise<void> {
-			if (upsert?.type !== 'notify') return
-			for (const msg of upsert.messages || []) {
-				try {
-					await handleMessage(msg)
-				} catch (err) {
-					logger.info({ result: 'handler_error', err: String(err) }, 'ban: erro inesperado')
-				}
-			}
-		},
+		auditBan('removed', { status: res?.[0]?.status ?? 'unknown', community: meta.linkedParent ?? null })
+	} catch (err) {
+		auditBan('remove_error', { err: String(err) })
 	}
 }
+
+// best-effort: nunca lança (não pode derrubar a coleta). Cada msg do lote é tratada isolada.
+export const createBanHandler = (deps: { sock: BanSocket; logger: CommandLogger }) =>
+	createCommandHandler({ name: 'ban', sock: deps.sock, logger: deps.logger, domain: banDomain })
