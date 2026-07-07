@@ -29,27 +29,28 @@ export interface AdminSocket {
 
 // Domínio do /admin: resolve on/off (entrada) → autoriza → idempotência → troca o setting. A ordem
 // entrada→auth é preservada porque requireGroupAdmin é chamado só depois de validar o argumento.
-const adminDomain = async ({ msg, groupJid, actor, sock, audit }: CommandContext<AdminSocket>): Promise<void> => {
+const adminDomain = async ({ msg, groupJid, actor, sock, audit: baseAudit }: CommandContext<AdminSocket>): Promise<void> => {
 	const action = parseAdminAction(messageText(msg))
 	// o audit do admin carrega `action` em todo log (como antes): embrulha o audit base uma vez.
-	const auditAdmin: typeof audit = (result, extra = {}) => audit(result, { action, ...extra })
+	// só o wrapper enriquecido fica em escopo (chama-se `audit`) — impossível logar sem o `action`.
+	const audit: typeof baseAudit = (result, extra = {}) => baseAudit(result, { action, ...extra })
 
-	if (!action) { auditAdmin('no_action'); return } // /admin sem on|off válido
-	const meta = await requireGroupAdmin<AdminGroupMetadata>({ sock, groupJid, actor, audit: auditAdmin })
+	if (!action) { audit('no_action'); return } // /admin sem on|off válido
+	const meta = await requireGroupAdmin<AdminGroupMetadata>({ sock, groupJid, actor, audit })
 	if (!meta) return // já auditou not_admin / metadata_error
 
 	// idempotência: se o grupo já está no estado alvo, não chama a API
 	const wantAnnounce = action === 'on'
 	if (Boolean(meta.announce) === wantAnnounce) {
-		auditAdmin(wantAnnounce ? 'already_on' : 'already_off'); return
+		audit(wantAnnounce ? 'already_on' : 'already_off'); return
 	}
 
 	// aplica o setting no grupo
 	try {
 		await sock.groupSettingUpdate(groupJid, wantAnnounce ? 'announcement' : 'not_announcement')
-		auditAdmin('applied')
+		audit('applied')
 	} catch (err) {
-		auditAdmin('setting_error', { err: String(err) })
+		audit('setting_error', { err: String(err) })
 	}
 }
 

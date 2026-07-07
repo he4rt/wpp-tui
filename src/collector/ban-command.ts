@@ -52,13 +52,14 @@ export interface BanSocket {
 
 // Domínio do /ban: resolve o alvo (entrada) → autoriza → guardrails → remoção. A ordem entrada→auth
 // é preservada porque requireGroupAdmin é chamado só depois de resolver/validar o alvo.
-const banDomain = async ({ msg, groupJid, actor, sock, audit }: CommandContext<BanSocket>): Promise<void> => {
+const banDomain = async ({ msg, groupJid, actor, sock, audit: baseAudit }: CommandContext<BanSocket>): Promise<void> => {
 	const targetRaw = resolveBanTarget(msg)
 	// o audit do ban carrega `target` em todo log (como antes): embrulha o audit base uma vez.
-	const auditBan: typeof audit = (result, extra = {}) => audit(result, { target: targetRaw, ...extra })
+	// só o wrapper enriquecido fica em escopo (chama-se `audit`) — impossível logar sem o `target`.
+	const audit: typeof baseAudit = (result, extra = {}) => baseAudit(result, { target: targetRaw, ...extra })
 
-	if (!targetRaw) { auditBan('no_target'); return }
-	const meta = await requireGroupAdmin<BanGroupMetadata>({ sock, groupJid, actor, audit: auditBan })
+	if (!targetRaw) { audit('no_target'); return }
+	const meta = await requireGroupAdmin<BanGroupMetadata>({ sock, groupJid, actor, audit })
 	if (!meta) return // já auditou not_admin / metadata_error
 
 	const target = jidNormalizedUser(targetRaw)
@@ -66,11 +67,11 @@ const banDomain = async ({ msg, groupJid, actor, sock, audit }: CommandContext<B
 	const findP = (jid: string) => participants.find((p) => jidNormalizedUser(p.id) === jid)
 
 	// guardrails
-	if (target === actor) { auditBan('self_ban'); return }
+	if (target === actor) { audit('self_ban'); return }
 	const targetP = findP(target)
-	if (!targetP) { auditBan('target_not_member'); return }
-	if (isAdmin(targetP)) { auditBan('target_is_admin'); return }
-	if (meta.owner && jidNormalizedUser(meta.owner) === target) { auditBan('target_is_owner'); return }
+	if (!targetP) { audit('target_not_member'); return }
+	if (isAdmin(targetP)) { audit('target_is_admin'); return }
+	if (meta.owner && jidNormalizedUser(meta.owner) === target) { audit('target_is_owner'); return }
 
 	// remoção
 	try {
@@ -79,16 +80,16 @@ const banDomain = async ({ msg, groupJid, actor, sock, audit }: CommandContext<B
 			// proteção extra: o dono da COMUNIDADE pode diferir do owner do subgrupo
 			try {
 				const parent = await sock.groupMetadata(meta.linkedParent)
-				if (parent.owner && jidNormalizedUser(parent.owner) === target) { auditBan('target_is_owner'); return }
+				if (parent.owner && jidNormalizedUser(parent.owner) === target) { audit('target_is_owner'); return }
 			} catch { /* sem a metadata do pai, segue sem essa checagem extra */ }
 			// communityParticipantsUpdate com 'remove' manda linked_groups:true → sai da comunidade + subgrupos
 			res = await sock.communityParticipantsUpdate(meta.linkedParent, [targetP.id], 'remove')
 		} else {
 			res = await sock.groupParticipantsUpdate(groupJid, [targetP.id], 'remove')
 		}
-		auditBan('removed', { status: res?.[0]?.status ?? 'unknown', community: meta.linkedParent ?? null })
+		audit('removed', { status: res?.[0]?.status ?? 'unknown', community: meta.linkedParent ?? null })
 	} catch (err) {
-		auditBan('remove_error', { err: String(err) })
+		audit('remove_error', { err: String(err) })
 	}
 }
 
