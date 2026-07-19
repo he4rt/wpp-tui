@@ -15,6 +15,8 @@ import { saveGroupCache, loadGroupCache } from '../group-cache.js'
 import { startRetention } from '../retention.js'
 import { createOutbox } from './outbox.js'
 import { createEventRouter } from './event-router.js'
+import { createBanHandler } from './ban-command.js'
+import { createAdminHandler } from './admin-command.js'
 import { startWebhookSender } from './webhook-sender.js'
 import { startHeartbeat } from './heartbeat.js'
 import type { ConnectionStatus, GroupInfo } from '../types.js'
@@ -181,6 +183,18 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 
 		sock = activeSock
 
+		// handler do comando /ban — usa o socket ativo; silencioso, erros vão pro log de auditoria.
+		const banHandler = createBanHandler({
+			sock: activeSock,
+			logger: deps.logger.child({ component: 'ban' }),
+		})
+
+		// handler do comando /admin — usa o socket ativo; silencioso, erros vão pro log de auditoria.
+		const adminHandler = createAdminHandler({
+			sock: activeSock,
+			logger: deps.logger.child({ component: 'admin' }),
+		})
+
 		activeSock.ev.process(async (events) => {
 			if (stopped) return
 
@@ -189,6 +203,12 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 				saveEvent(eventName, eventData)
 				router?.handleEvent(eventName, eventData)
 				deps.onEvent?.(eventName, eventData)
+			}
+
+			// comandos /ban e /admin: best-effort, não bloqueiam nem derrubam a coleta (handlers nunca lançam).
+			if (events['messages.upsert']) {
+				void banHandler.handle(events['messages.upsert'] as Parameters<typeof banHandler.handle>[0])
+				void adminHandler.handle(events['messages.upsert'] as Parameters<typeof adminHandler.handle>[0])
 			}
 
 			if (events['creds.update']) {

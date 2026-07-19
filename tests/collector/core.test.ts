@@ -37,6 +37,9 @@ function makeFakeSocket(opts: {
 		end: 0,
 		sent: [] as Array<{ jid: string; text: string }>,
 		fetchedGroups: 0,
+		removedGroup: [] as Array<{ jid: string; jids: string[] }>,
+		removedCommunity: [] as Array<{ jid: string; jids: string[] }>,
+		settingUpdates: [] as Array<{ jid: string; setting: string }>,
 	}
 	const sock: any = {
 		user: opts.user,
@@ -48,6 +51,18 @@ function makeFakeSocket(opts: {
 		async groupFetchAllParticipating() {
 			calls.fetchedGroups += 1
 			return opts.groups ?? {}
+		},
+		async groupMetadata(jid: string) {
+			return (opts.groups ?? {})[jid] ?? { id: jid, participants: [] }
+		},
+		async groupParticipantsUpdate(jid: string, jids: string[]) {
+			calls.removedGroup.push({ jid, jids }); return [{ status: '200', jid: jids[0] }]
+		},
+		async communityParticipantsUpdate(jid: string, jids: string[]) {
+			calls.removedCommunity.push({ jid, jids }); return [{ status: '200', jid: jids[0] }]
+		},
+		async groupSettingUpdate(jid: string, setting: string) {
+			calls.settingUpdates.push({ jid, setting })
 		},
 		async sendMessage(jid: string, content: { text: string }) {
 			calls.sent.push({ jid, text: content.text })
@@ -254,4 +269,75 @@ test('stop() encerra o socket e sendMessage delega ao socket', async () => {
 
 	await handle.stop()
 	assert.equal(fake.calls.end, 1)
+})
+
+test('messages.upsert com /ban de admin aciona a remoção (fiação core → ban-command)', async () => {
+	const fake = makeFakeSocket({
+		user: { id: '55@s.whatsapp.net', name: 'Bot' },
+		groups: {
+			'g1@g.us': {
+				id: 'g1@g.us',
+				participants: [{ id: 'admin@s.whatsapp.net', admin: 'admin' }, { id: 'victim@s.whatsapp.net', admin: null }],
+			},
+		},
+	})
+	const handle = startCollectorCore({
+		authDir: 'baileys_auth_info',
+		outboxPath: 'outbox.db',
+		logger: silentLogger,
+		baileysLogger: silentLogger,
+		webhook: null,
+		makeSocket: makeFakeMakeSocket(fake.sock),
+	})
+
+	await fake.emit({
+		'messages.upsert': {
+			type: 'notify',
+			messages: [{
+				key: { remoteJid: 'g1@g.us', participant: 'admin@s.whatsapp.net', id: 'CMD1' },
+				message: { extendedTextMessage: { text: '/ban', contextInfo: { participant: 'victim@s.whatsapp.net', stanzaId: 'S1' } } },
+			}],
+		},
+	})
+	await flush()
+
+	assert.deepEqual(fake.calls.removedGroup, [{ jid: 'g1@g.us', jids: ['victim@s.whatsapp.net'] }])
+
+	await handle.stop()
+})
+
+test('messages.upsert com /admin on de admin aciona groupSettingUpdate (fiação core → admin-command)', async () => {
+	const fake = makeFakeSocket({
+		user: { id: '55@s.whatsapp.net', name: 'Bot' },
+		groups: {
+			'g1@g.us': {
+				id: 'g1@g.us',
+				announce: false,
+				participants: [{ id: 'admin@s.whatsapp.net', admin: 'admin' }],
+			},
+		},
+	})
+	const handle = startCollectorCore({
+		authDir: 'baileys_auth_info',
+		outboxPath: 'outbox.db',
+		logger: silentLogger,
+		baileysLogger: silentLogger,
+		webhook: null,
+		makeSocket: makeFakeMakeSocket(fake.sock),
+	})
+
+	await fake.emit({
+		'messages.upsert': {
+			type: 'notify',
+			messages: [{
+				key: { remoteJid: 'g1@g.us', participant: 'admin@s.whatsapp.net', id: 'CMD1' },
+				message: { extendedTextMessage: { text: '!admin on' } },
+			}],
+		},
+	})
+	await flush()
+
+	assert.deepEqual(fake.calls.settingUpdates, [{ jid: 'g1@g.us', setting: 'announcement' }])
+
+	await handle.stop()
 })
