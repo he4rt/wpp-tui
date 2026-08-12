@@ -1,62 +1,79 @@
 # ──────────────────────────────────────────────────────────────
-# wpp-tui — coletor WhatsApp em modo headless (systemd)
+# wpp-tui — coletor WhatsApp em modo headless (systemd --user)
 #
 # Roda o coletor como serviço 24/7, sem TUI: conecta no WhatsApp via
 # Baileys, persiste os logs crus e empurra cada evento para o webhook
 # (Laravel / integration-whatsapp).  Veja docs/adr/0001 (núcleo único
 # extraído do React) e docs/adr/0002 (sessão pré-provisionada, sem QR).
 #
-# ── Instalação ──
+# Esta é uma unit de USUÁRIO (systemd --user): roda com a conta do
+# próprio login (ex.: `forge`), SEM sudo e SEM /etc/systemd/system.
+# Vantagem: deploy inteiro no home do usuário, sem privilégio de root.
+#
+# ── Instalação (como o usuário do deploy, ex.: forge) ──
 #   1. Build:        pnpm install && pnpm build
 #   2. Pré-provisione a sessão (ADR-0002): pareie UMA vez no Modo TUI
 #      (`pnpm dev`, leia o QR) e copie a pasta de auth para o server:
-#         scp -r ./baileys_auth_info usuario@server:/opt/wpp-tui/baileys_auth_info
+#         scp -r ./baileys_auth_info forge@server:~/wpp-tui/baileys_auth_info
 #      O headless NÃO exibe QR: se não houver sessão válida ele loga
 #      FATAL e sai com código ≠ 0 (o systemd sinaliza o problema).
-#   3. Configure o ambiente em /etc/whatsapp-collector.env
+#   3. Configure o ambiente em ~/wpp-tui/.env
 #      (use o .env.example como base — WEBHOOK_URL e
 #      WHATSAPP_WEBHOOK_SECRET são OBRIGATÓRIAS no headless).
-#   4. Copie esta unit:
-#         sudo cp deploy/whatsapp-collector.service /etc/systemd/system/
-#         sudo systemctl daemon-reload
-#         sudo systemctl enable --now whatsapp-collector
-#   5. Acompanhe os logs (JSON na stdout → journald):
-#         journalctl -u whatsapp-collector -f
+#   4. Instale a unit no diretório de units de usuário:
+#         mkdir -p ~/.config/systemd/user
+#         cp deploy/whatsapp-collector.service ~/.config/systemd/user/
+#         systemctl --user daemon-reload
+#         systemctl --user enable --now whatsapp-collector
+#   5. Permita que o serviço rode SEM sessão de login aberta
+#      (senão o systemd --user encerra tudo no logout):
+#         sudo loginctl enable-linger forge     # uma vez, precisa de sudo só aqui
+#      Alternativa sem sudo NENHUM: peça a um admin, ou rode
+#      `loginctl enable-linger` se a policy do host permitir ao usuário.
+#   6. Acompanhe os logs (JSON na stdout → journald do usuário):
+#         journalctl --user -u whatsapp-collector -f
 #
-# Ajuste User/Group/WorkingDirectory para o seu deploy real.
+# Ajuste ExecStart (caminho do node) e WorkingDirectory ao deploy real.
+# `%h` expande para o home do usuário do serviço (ex.: /home/forge).
 # ──────────────────────────────────────────────────────────────
 
 [Unit]
-# Descrição que aparece no `systemctl status`.
+# Descrição que aparece no `systemctl --user status`.
 Description=wpp-tui — coletor WhatsApp (headless)
-# Sobe depois da rede estar pronta (o coletor abre um WebSocket de saída).
-After=network-online.target
-Wants=network-online.target
+# Obs.: no manager de usuário NÃO existe network-online.target; o app
+# tem reconexão interna, então não ordenamos contra alvos de rede aqui.
+
+# Janela do contador de falhas e teto de reinícios dentro dela.
+# (Estas chaves pertencem a [Unit], não a [Service] — ficavam no lugar
+#  errado na unit de sistema e o journal reclamava de "Unknown key name".)
+# Acima disso o systemd marca a unit como `failed` e para de tentar.
+StartLimitIntervalSec=300
+StartLimitBurst=5
 
 [Service]
 # Type=simple: o processo do ExecStart É o serviço (não faz fork/daemonize).
 Type=simple
 
-# Usuário/grupo sem privilégios. Crie-os antes (ex.: `useradd -r -s /usr/sbin/nologin wpp`).
-# Evite rodar como root — o coletor não precisa.
-User=wpp
-Group=wpp
-
 # Diretório de trabalho: precisa conter `baileys_auth_info/` (a sessão
 # pré-provisionada) e é onde `outbox.db` e a pasta `logs/` serão criados.
 # É também a partir daqui que os paths relativos do app são resolvidos.
-WorkingDirectory=/opt/wpp-tui
+WorkingDirectory=%h/wpp-tui
 
 # Arquivo de ambiente. O `-` na frente torna-o opcional (não falha se sumir),
 # mas lembre-se: sem WEBHOOK_URL + WHATSAPP_WEBHOOK_SECRET o headless aborta
 # no boot por design (fail-fast).
-EnvironmentFile=-/etc/whatsapp-collector.env
+EnvironmentFile=-%h/wpp-tui/.env
 
 # Garante o modo headless mesmo que a env file não traga HEADLESS=1.
 Environment=HEADLESS=1
+Environment=NODE_ENV=production
+Environment=NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/cloudflare-origin-rsa.crt
 
 # Logs em JSON na stdout (padrão do headless) caem no journald.
 # NÃO use LOG_PRETTY=1 em produção — só atrapalha o parsing do journal.
+# Se o node estiver via nvm/fnm, troque por caminho absoluto real
+# (descubra com `command -v node`), pois o systemd --user não herda
+# o PATH interativo do shell.
 ExecStart=/usr/bin/node dist/index.js --headless
 
 # Reinicia só em falha (saída ≠ 0). Saída 0 (shutdown gracioso via
@@ -65,11 +82,6 @@ ExecStart=/usr/bin/node dist/index.js --headless
 Restart=on-failure
 # Backoff entre tentativas, para não martelar o WhatsApp em loop.
 RestartSec=5s
-
-# Janela do contador de falhas e teto de reinícios dentro dela.
-# Acima disso o systemd marca a unit como `failed` e para de tentar.
-StartLimitIntervalSec=300
-StartLimitBurst=5
 
 # SIGTERM dispara o shutdown gracioso (fecha outbox/SQLite + encerra o socket).
 KillSignal=SIGTERM
@@ -82,9 +94,8 @@ TimeoutStopSec=15s
 # algumas opções podem bloquear escrita em paths inesperados.
 #NoNewPrivileges=true
 #ProtectSystem=strict
-#ProtectHome=true
 # Permite escrita só no WorkingDirectory (baileys_auth_info, outbox.db, logs/).
-#ReadWritePaths=/opt/wpp-tui
+#ReadWritePaths=%h/wpp-tui
 #PrivateTmp=true
 #ProtectKernelTunables=true
 #ProtectKernelModules=true
@@ -95,5 +106,5 @@ TimeoutStopSec=15s
 #MemoryDenyWriteExecute=true
 
 [Install]
-# Habilita no boot via `systemctl enable`.
-WantedBy=multi-user.target
+# No manager de usuário o alvo padrão é default.target (NÃO multi-user.target).
+WantedBy=default.target
