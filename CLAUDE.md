@@ -71,3 +71,17 @@ The most important events for feature work:
 - `@lid`: linked ID (WhatsApp's internal user identifier, independent of phone)
 - `@broadcast`: broadcast list
 - `@newsletter`: channel/community
+
+## Agent skills
+
+### Issue tracker
+
+Issues live as GitHub issues in `he4rt/wpp-tui` (via the `gh` CLI). See `docs/agents/issue-tracker.md`.
+
+### Triage labels
+
+Five triage roles + `type:*` / `difficulty:*` labels, following the `brd-digital` scheme minus `mod:*`. See `docs/agents/triage-labels.md`.
+
+### Domain docs
+
+Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
