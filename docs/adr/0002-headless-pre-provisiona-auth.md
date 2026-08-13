@@ -1,6 +1,10 @@
 # Headless pré-provisiona a sessão (não pareia via QR)
 
-**Status:** accepted
+**Status:** superseded by [0003](0003-headless-pareia-via-pairing-code.md)
+
+> **Superseded (2026-08-12):** o headless passou a parear via pairing-code num comando one-shot
+> dedicado (ver ADR-0003). O pré-provisionamento descrito abaixo permanece válido apenas como
+> fallback legado; não é mais o caminho recomendado de deploy.
 
 O **Modo headless** não exibe QR nem implementa pairing-code: ele exige que `baileys_auth_info` já
 exista, copiado de um pareamento feito no **Modo TUI** ("pré-provisionamento"). Se o headless receber

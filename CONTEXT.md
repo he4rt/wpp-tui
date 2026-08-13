@@ -15,11 +15,15 @@ A lógica de operação que independe de interface: conexão Baileys + auth + re
 _Avoid_: backend, engine.
 
 **Modo headless**:
-Modo de execução do processo que sobe apenas o **Núcleo do coletor** (sem TUI/Ink), pensado para rodar como serviço de longa duração (systemd, 24/7, sem TTY). Exige `WEBHOOK_URL` + `WHATSAPP_WEBHOOK_SECRET` (fail-fast) e exige **auth pré-provisionado** (não pareia via QR). Logs em JSON no stdout.
+Modo de execução do processo que sobe apenas o **Núcleo do coletor** (sem TUI/Ink), pensado para rodar como serviço de longa duração (systemd, 24/7, sem TTY). Exige `WEBHOOK_URL` + `WHATSAPP_WEBHOOK_SECRET` (fail-fast). O serviço em si **não pareia**: sem sessão válida, loga fatal e sai ≠ 0. O pareamento é feito à parte pelo **Comando de pareamento**. Logs em JSON no stdout.
 _Avoid_: modo daemon, modo server.
 
-**Pré-provisionamento**:
-Parear a sessão localmente no **Modo TUI** e copiar o diretório `baileys_auth_info` para o server. O **Modo headless** nunca exibe QR; sem sessão válida, ele loga erro fatal e sai.
+**Comando de pareamento**:
+Processo one-shot dedicado (`--pair <numero>` / `pnpm pair`) que estabelece a sessão no server via **pairing-code** do Baileys, sem QR e sem TUI. Imprime o code de 8 caracteres, aguarda a conexão abrir, grava `baileys_auth_info` e sai. É o caminho recomendado de deploy (ADR-0003); roda separado do **Modo headless**.
+_Avoid_: modo pair, login headless (o serviço headless nunca pareia).
+
+**Pré-provisionamento** (_fallback legado_):
+Parear a sessão localmente no **Modo TUI** e copiar o diretório `baileys_auth_info` para o server. Era o caminho de deploy original (ADR-0002), hoje **superseded** pelo **Comando de pareamento** (ADR-0003); permanece só como fallback.
 
 **Modo TUI**:
 Modo de execução atual: o **Núcleo do coletor** mais a interface de terminal (Ink/React) com abas Chat/Stats/Debug e envio de mensagens.
@@ -36,5 +40,6 @@ Evento do WhatsApp originado de um JID `@g.us` — a única coisa que o **Coleto
 ## Flagged ambiguities
 
 - "headless" poderia sugerir "sem nenhuma saída"; aqui significa **sem TUI**, mas **com** logs ricos no stdout — a observabilidade é justamente o ponto.
-- "QR no headless": não há. QR só existe no **Modo TUI**; no headless, receber um QR significa "sem sessão" → erro fatal (ver **Pré-provisionamento**).
+- "QR no headless": não há. QR só existe no **Modo TUI**; no headless, receber um QR significa "sem sessão" → erro fatal. O pareamento no server é sem QR, via **Comando de pareamento** (pairing-code).
+- "pareamento no headless": o **serviço** headless nunca pareia (fail-fast se sem sessão). Quem pareia é o **Comando de pareamento**, um processo one-shot à parte — não confundir os dois.
 - Dois loggers: o logger do **app/coletor** (`LOG_LEVEL`, default `info`) é distinto do logger do **Baileys** (`BAILEYS_LOG_LEVEL`, default `warn`) — separa sinal de ruído de protocolo.
