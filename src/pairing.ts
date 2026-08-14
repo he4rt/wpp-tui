@@ -52,12 +52,32 @@ export interface PairingDeps {
 	makeSocket?: typeof makeWASocketReal // injetável p/ testes
 	loadAuthState?: typeof useMultiFileAuthState // injetável p/ testes
 	fetchVersion?: typeof fetchLatestBaileysVersion // injetável p/ testes (evita rede)
-	writeCode?: (code: string) => void // padrão: escreve o código + \n no STDOUT
+	writeCode?: (code: string) => void // padrão: escreve o código cru + \n no STDOUT (copiável/pipe)
+	announceCode?: (code: string, waitSeconds: number) => void // padrão: banner humano no STDERR
 	timeoutMs?: number // padrão 120000; sem `open` até lá → exit 1
 	setTimer?: (fn: () => void, ms: number) => { unref?: () => void } // injetável p/ testes
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any
 	clearTimer?: (t: any) => void // injetável p/ testes
 	rmAuthDir?: (dir: string) => void // padrão fs.rmSync recursivo; injetável p/ testes
+}
+
+// Banner humano do código no STDERR (fd 2): mantém o STDOUT limpo (só o código cru, p/ pipe) e ainda
+// assim dá um alvo VISÍVEL no terminal, mesmo com o Baileys em trace. O código de 8 chars sai
+// hifenizado (4-4), como o WhatsApp mostra. Escreve em fd 2 direto (não via pino) pra não virar JSON.
+export function formatPairingCode(code: string): string {
+	return code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code
+}
+
+function defaultAnnounceCode(code: string, waitSeconds: number): void {
+	const shown = formatPairingCode(code)
+	const line = '─'.repeat(shown.length + 8)
+	const banner =
+		`\n  ┌${line}┐\n` +
+		`  │    ${shown}    │\n` +
+		`  └${line}┘\n` +
+		`  No celular: WhatsApp › Aparelhos conectados › Conectar um aparelho › Conectar com número.\n` +
+		`  Digite o código acima. Aguardando pareamento (até ${waitSeconds}s)…\n\n`
+	process.stderr.write(banner)
 }
 
 // Executa o pareamento e resolve com o código de saída do processo (0 sucesso, != 0 falha).
@@ -79,6 +99,7 @@ export async function runPairing(deps: PairingDeps): Promise<number> {
 	const makeSocket = deps.makeSocket ?? makeWASocketReal
 	const fetchVersion = deps.fetchVersion ?? fetchLatestBaileysVersion
 	const writeCode = deps.writeCode ?? ((c: string) => void process.stdout.write(c + '\n'))
+	const announceCode = deps.announceCode ?? defaultAnnounceCode
 	const setTimer = deps.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
 	const clearTimer = deps.clearTimer ?? ((t: unknown) => clearTimeout(t as ReturnType<typeof setTimeout>))
 	const rmAuthDir =
@@ -156,12 +177,10 @@ export async function runPairing(deps: PairingDeps): Promise<number> {
 					requested = true
 					try {
 						const code = await activeSock.requestPairingCode(validNumber as string)
-						writeCode(code)
-						log.info(
-							`pairing: código gerado; digite no celular em Aparelhos conectados > Conectar com número. Aguardando pareamento (até ${Math.round(
-								timeoutMs / 1000,
-							)}s)…`,
-						)
+						const waitSeconds = Math.round(timeoutMs / 1000)
+						writeCode(code) // STDOUT: código cru, sozinho (copiável / pipe)
+						announceCode(code, waitSeconds) // STDERR: banner humano, visível no terminal
+						log.info({ code: formatPairingCode(code), waitSeconds }, 'pairing: código de pareamento gerado')
 					} catch (err) {
 						log.error({ err: String(err) }, 'pairing: falha ao solicitar o código de pareamento')
 						finish(1)
@@ -207,11 +226,17 @@ export async function runPairing(deps: PairingDeps): Promise<number> {
 
 // Ponte CLI: monta os deps reais (logger em STDERR, socket/auth reais) e retorna o exit code.
 // O logger do pareamento escreve no STDERR (fd 2) para manter o STDOUT limpo (só o código).
+//
+// `pair` é interativo e one-shot: o trace do Baileys (XML de handshake, pings de 30s) só ENTERRA o
+// código no terminal. Por isso o Baileys aqui fica em 'warn', ignorando BAILEYS_LOG_LEVEL do .env
+// (que costuma ficar em 'trace' pro coletor 24/7). Escape p/ depurar o pareamento: PAIR_DEBUG=1
+// reativa o nível do BAILEYS_LOG_LEVEL (ou 'debug'). O logger do próprio comando segue o LOG_LEVEL.
 export async function runPairingCli(argv: string[], env: NodeJS.ProcessEnv): Promise<number> {
 	const { number, force } = resolvePairingInput(argv, env)
 
 	const logger = P({ level: env.LOG_LEVEL || 'info' }, P.destination(2))
-	const baileysLogger = logger.child({ component: 'baileys' }, { level: env.BAILEYS_LOG_LEVEL || 'warn' })
+	const baileysLevel = env.PAIR_DEBUG ? env.BAILEYS_LOG_LEVEL || 'debug' : 'warn'
+	const baileysLogger = logger.child({ component: 'baileys' }, { level: baileysLevel })
 
 	return runPairing({ number, force, logger, baileysLogger })
 }

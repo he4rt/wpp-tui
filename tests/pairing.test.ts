@@ -6,6 +6,7 @@ import {
 	runPairing,
 	validatePairingNumber,
 	resolvePairingInput,
+	formatPairingCode,
 	type PairingDeps,
 } from '../src/pairing.js'
 
@@ -72,6 +73,7 @@ function baseDeps(over: Partial<PairingDeps> & { sock?: any } = {}): PairingDeps
 		loadAuthState: auth.loadAuthState,
 		fetchVersion,
 		writeCode: () => {},
+		announceCode: () => {}, // banner do STDERR silenciado nos testes
 		...over,
 	}
 }
@@ -85,6 +87,38 @@ test('validatePairingNumber: aceita dígitos com DDI, rejeita não-dígitos e au
 	assert.equal(validatePairingNumber(''), null)
 	assert.equal(validatePairingNumber(undefined), null)
 	assert.equal(validatePairingNumber('123'), null) // curto demais
+})
+
+test('formatPairingCode: hifeniza 8 chars (4-4), deixa o resto intacto', () => {
+	assert.equal(formatPairingCode('PLETNK6Z'), 'PLET-NK6Z')
+	assert.equal(formatPairingCode('ABCD1234'), 'ABCD-1234')
+	assert.equal(formatPairingCode('SHORT'), 'SHORT')
+})
+
+test('anúncio do código: STDOUT recebe o código CRU; o banner (STDERR) recebe o hifenizado', async () => {
+	const fake = makeFakeSocket({ code: 'PLETNK6Z' })
+	const auth = fakeAuthState(false)
+	let stdout: string | null = null
+	let announced: string | null = null
+	const codeP = runPairing(
+		baseDeps({
+			sock: fake.sock,
+			loadAuthState: auth.loadAuthState,
+			writeCode: (c) => {
+				stdout = c
+			},
+			announceCode: (c) => {
+				announced = c
+			},
+		}),
+	)
+
+	await fake.emit({ 'connection.update': { qr: '2@ref' } })
+	await fake.emit({ 'connection.update': { connection: 'open' } })
+
+	assert.equal(await codeP, 0)
+	assert.equal(stdout, 'PLETNK6Z', 'STDOUT deve ser o código cru (copiável/pipe)')
+	assert.equal(announced, 'PLETNK6Z', 'o banner recebe o código; a hifenização acontece dentro dele')
 })
 
 test('resolvePairingInput: número do argv > env; detecta --force', () => {
