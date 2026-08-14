@@ -4,37 +4,31 @@
 # Roda o coletor como serviço 24/7, sem TUI: conecta no WhatsApp via
 # Baileys, persiste os logs crus e empurra cada evento para o webhook
 # (Laravel / integration-whatsapp).  Veja docs/adr/0001 (núcleo único
-# extraído do React) e docs/adr/0002 (sessão pré-provisionada, sem QR).
+# extraído do React) e docs/adr/0003 (pareamento via pairing-code).
 #
 # Esta é uma unit de USUÁRIO (systemd --user): roda com a conta do
 # próprio login (ex.: `forge`), SEM sudo e SEM /etc/systemd/system.
 # Vantagem: deploy inteiro no home do usuário, sem privilégio de root.
 #
 # ── Instalação (como o usuário do deploy, ex.: forge) ──
-#   1. Build:        pnpm install && pnpm build
-#   2. Pré-provisione a sessão (ADR-0002): pareie UMA vez no Modo TUI
-#      (`pnpm dev`, leia o QR) e copie a pasta de auth para o server:
-#         scp -r ./baileys_auth_info forge@server:~/wpp-tui/baileys_auth_info
-#      O headless NÃO exibe QR: se não houver sessão válida ele loga
-#      FATAL e sai com código ≠ 0 (o systemd sinaliza o problema).
-#   3. Configure o ambiente em ~/wpp-tui/.env
-#      (use o .env.example como base — WEBHOOK_URL e
-#      WHATSAPP_WEBHOOK_SECRET são OBRIGATÓRIAS no headless).
-#   4. Instale a unit no diretório de units de usuário:
-#         mkdir -p ~/.config/systemd/user
-#         cp deploy/whatsapp-collector.service ~/.config/systemd/user/
-#         systemctl --user daemon-reload
-#         systemctl --user enable --now whatsapp-collector
-#   5. Permita que o serviço rode SEM sessão de login aberta
-#      (senão o systemd --user encerra tudo no logout):
-#         sudo loginctl enable-linger forge     # uma vez, precisa de sudo só aqui
-#      Alternativa sem sudo NENHUM: peça a um admin, ou rode
-#      `loginctl enable-linger` se a policy do host permitir ao usuário.
-#   6. Acompanhe os logs (JSON na stdout → journald do usuário):
-#         journalctl --user -u whatsapp-collector -f
+# Os alvos `make svc-*` cobrem todo o ciclo; instale-a NÃO à mão:
+#   1. Build:            pnpm install && pnpm build
+#   2. Pareie a sessão:  make pair NUMBER=5511999999999
+#      (Comando de pareamento, ADR-0003 — pairing-code, sem QR nem
+#      `scp` do baileys_auth_info). O serviço em si NÃO pareia: sem
+#      sessão válida ele loga FATAL e sai ≠ 0 (o systemd sinaliza).
+#   3. Ambiente em ~/wpp-tui/.env (base no .env.example — WEBHOOK_URL
+#      e WHATSAPP_WEBHOOK_SECRET são OBRIGATÓRIAS no headless).
+#   4. Instale + habilite:  make svc-install
+#      (copia esta unit para ~/.config/systemd/user, troca o ExecStart
+#      pelo node ABSOLUTO do PATH, daemon-reload, enable --now.)
+#   5. Rode SEM login aberto:  make svc-linger
+#      (único passo com sudo: `loginctl enable-linger`; senão o
+#      systemd --user encerra tudo no logout.)
+#   6. Logs:  make svc-logs   (journalctl --user -u whatsapp-collector -f)
 #
-# Ajuste ExecStart (caminho do node) e WorkingDirectory ao deploy real.
-# `%h` expande para o home do usuário do serviço (ex.: /home/forge).
+# WorkingDirectory usa `%h` (home do usuário do serviço, ex.: /home/forge);
+# o svc-install resolve o caminho do node — ajuste só se o deploy diferir.
 # ──────────────────────────────────────────────────────────────
 
 [Unit]
@@ -55,7 +49,8 @@ StartLimitBurst=5
 Type=simple
 
 # Diretório de trabalho: precisa conter `baileys_auth_info/` (a sessão
-# pré-provisionada) e é onde `outbox.db` e a pasta `logs/` serão criados.
+# gravada pelo Comando de pareamento) e é onde `outbox.db` e a pasta
+# `logs/` serão criados.
 # É também a partir daqui que os paths relativos do app são resolvidos.
 WorkingDirectory=%h/wpp-tui
 
@@ -77,8 +72,8 @@ Environment=NODE_EXTRA_CA_CERTS=/usr/local/share/ca-certificates/cloudflare-orig
 ExecStart=/usr/bin/node dist/index.js --headless
 
 # Reinicia só em falha (saída ≠ 0). Saída 0 (shutdown gracioso via
-# SIGTERM) não reinicia. Reparear após `loggedOut` é manual (ADR-0002):
-# o processo sai ≠ 0 e o systemd vai retentar — provisione a sessão de novo.
+# SIGTERM) não reinicia. Reparear após `loggedOut` é manual (ADR-0003):
+# o processo sai ≠ 0 e o systemd retenta — rode `make pair` de novo.
 Restart=on-failure
 # Backoff entre tentativas, para não martelar o WhatsApp em loop.
 RestartSec=5s

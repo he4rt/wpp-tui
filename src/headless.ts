@@ -3,10 +3,10 @@ import { resolveHeadlessConfig, HeadlessConfigError } from './collector/headless
 import { installShutdown } from './collector/shutdown.js'
 import { createLoggers } from './logging.js'
 
-// Runner headless do coletor (ADR-0001/0002). Sem UI, sem Ink: resolve a config a partir do
+// Runner headless do coletor (ADR-0001/0003). Sem UI, sem Ink: resolve a config a partir do
 // ambiente, monta os loggers, liga o núcleo do coletor e instala o shutdown gracioso.
 // O headless EXIGE WEBHOOK_URL + WHATSAPP_WEBHOOK_SECRET (fail-fast antes de conectar) e NÃO
-// mostra QR — se receber um QR (sem sessão válida), loga fatal e sai com código != 0 (ADR-0002).
+// pareia — se receber um QR (sem sessão válida), loga fatal e sai com código != 0 (ADR-0003).
 export async function runHeadless(env: NodeJS.ProcessEnv = process.env): Promise<void> {
 	// Config primeiro (fail-fast). Se faltar env obrigatória, loga fatal e sai ANTES de conectar.
 	let config
@@ -52,8 +52,8 @@ export async function runHeadless(env: NodeJS.ProcessEnv = process.env): Promise
 			}
 		},
 		onQr: () => {
-			// ADR-0002: headless não faz pareamento. QR aqui significa sessão ausente/inválida.
-			waLog.fatal('whatsapp: sem sessão válida; pré-provisione baileys_auth_info (pareie na TUI e copie o diretório)')
+			// ADR-0003: headless não faz pareamento. QR aqui significa sessão ausente/inválida.
+			waLog.fatal('whatsapp: sem sessão válida; pareie no server com `make pair NUMBER=<numero>` (pnpm pair) e reinicie o serviço')
 			process.exit(1)
 		},
 		onEvent: (eventName) => {
