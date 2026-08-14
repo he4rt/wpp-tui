@@ -107,7 +107,8 @@ test('happy path: imprime o código no stdout, grava a sessão no open e sai 0',
 		}),
 	)
 
-	// dá tempo do requestPairingCode + ev.process registrarem, então dispara o open.
+	// o 1º qr dispara o requestPairingCode; depois o open grava a sessão.
+	await fake.emit({ 'connection.update': { qr: '2@ref' } })
 	await fake.emit({ 'connection.update': { connection: 'open' } })
 	await fake.emit({ 'creds.update': {} })
 
@@ -210,6 +211,7 @@ test('sessão já registrada com --force: descarta o authDir e prossegue com o p
 		}),
 	)
 
+	await fake.emit({ 'connection.update': { qr: '2@ref' } })
 	await fake.emit({ 'connection.update': { connection: 'open' } })
 
 	const exit = await codeP
@@ -219,10 +221,37 @@ test('sessão já registrada com --force: descarta o authDir e prossegue com o p
 	assert.deepEqual(fake.calls.requested, ['5511999999999'])
 })
 
+test('--force com dir sujo mas NÃO registrado: descarta o authDir mesmo assim', async () => {
+	const fake = makeFakeSocket({ code: 'DIRTY123' })
+	const auth = fakeAuthState(false) // NÃO registrado, mas force deve limpar do mesmo jeito
+	let removed: string | null = null
+	const codeP = runPairing(
+		baseDeps({
+			sock: fake.sock,
+			loadAuthState: auth.loadAuthState,
+			force: true,
+			rmAuthDir: (dir) => {
+				removed = dir
+			},
+		}),
+	)
+
+	await fake.emit({ 'connection.update': { qr: '2@ref' } })
+	await fake.emit({ 'connection.update': { connection: 'open' } })
+
+	const exit = await codeP
+	assert.equal(exit, 0)
+	assert.ok(removed, 'authDir deveria ser descartado com --force mesmo sem sessão registrada')
+	assert.deepEqual(fake.calls.requested, ['5511999999999'])
+})
+
 test('requestPairingCode falha: sai != 0 e encerra o socket', async () => {
 	const fake = makeFakeSocket({ requestThrows: true })
 	const auth = fakeAuthState(false)
-	const exit = await runPairing(baseDeps({ sock: fake.sock, loadAuthState: auth.loadAuthState }))
+	const codeP = runPairing(baseDeps({ sock: fake.sock, loadAuthState: auth.loadAuthState }))
+	// o qr dispara o requestPairingCode, que lança → falha imediata.
+	await fake.emit({ 'connection.update': { qr: '2@ref' } })
+	const exit = await codeP
 	assert.equal(exit, 1)
 	assert.equal(fake.calls.end, 1)
 })
@@ -232,6 +261,8 @@ test('close com restartRequired (515) pós-code: reconecta e sai 0 no open segui
 	const auth = fakeAuthState(false)
 	const codeP = runPairing(baseDeps({ sock: fake.sock, loadAuthState: auth.loadAuthState }))
 
+	// o qr dispara o requestPairingCode; o code é solicitado UMA vez só.
+	await fake.emit({ 'connection.update': { qr: '2@ref' } })
 	// Baileys fecha com restartRequired logo após o code ser aceito; o comando deve reconectar…
 	await fake.emit({ 'connection.update': { connection: 'close', lastDisconnect: { error: { output: { statusCode: 515 } } } } })
 	// …e o open subsequente conclui com exit 0.

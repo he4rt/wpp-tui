@@ -92,25 +92,28 @@ export async function runPairing(deps: PairingDeps): Promise<number> {
 	let { state, saveCreds } = await loadAuthState(authDir)
 
 	// 3) Sessão já registrada: recusa sem --force (não chama requestPairingCode). Com --force, descarta
-	//    o diretório e recarrega — requestPairingCode exige creds NÃO registradas.
+	//    o diretório e recarrega DO ZERO — não só quando `registered`. Um diretório "sujo" mas NÃO
+	//    registrado (ex.: `me`/noiseKey de um pareamento abortado) faz o Baileys tentar LOGIN em vez de
+	//    registrar: ele não emite `qr`, o requestPairingCode nunca dispara e o WhatsApp derruba (401).
+	//    O pareamento limpo exige um authDir vazio → creds novas, sem `me` → Baileys entra em registro.
 	if (state.creds.registered && !deps.force) {
 		log.error(
 			`pairing: já existe uma sessão registrada em ${authDir}. Use --force para re-parear (isso descarta a sessão atual).`,
 		)
 		return 1
 	}
-	if (state.creds.registered && deps.force) {
-		log.warn(`pairing: --force com sessão existente; descartando ${authDir} e re-pareando.`)
+	if (deps.force) {
+		log.warn(`pairing: --force; descartando ${authDir} e re-pareando do zero.`)
 		rmAuthDir(authDir)
 		;({ state, saveCreds } = await loadAuthState(authDir))
 	}
 
 	const { version } = await fetchVersion()
 
-	// 4) Conecta, solicita o pairing-code (só na 1ª vez) e aguarda `connection: 'open'` → grava creds
-	//    → exit 0. Timeout (120s) → exit 1. Um `close` com `restartRequired` (515) é ESPERADO logo
-	//    após o code ser aceito: reconecta sem re-solicitar o code (o mesmo padrão de core.ts). Qualquer
-	//    outro `close` antes do open é falha → exit 1.
+	// 4) Conecta e, no 1º `qr` (handshake pronto), solicita o pairing-code; aguarda `connection: 'open'`
+	//    → grava creds → exit 0. Timeout (120s) → exit 1. Um `close` com `restartRequired` (515) é
+	//    ESPERADO logo após o code ser aceito: reconecta sem re-solicitar o code (o mesmo padrão de
+	//    core.ts). Qualquer outro `close` antes do open é falha → exit 1.
 	return await new Promise<number>((resolve) => {
 		let settled = false
 		let requested = false
@@ -138,31 +141,33 @@ export async function runPairing(deps: PairingDeps): Promise<number> {
 			})
 			sock = activeSock
 
-			// Solicita o code uma única vez (requestPairingCode exige creds NÃO registradas; após o
-			// pareamento as creds ficam registradas e não se pede de novo no restart).
-			if (!requested) {
-				requested = true
-				try {
-					const code = await activeSock.requestPairingCode(validNumber as string)
-					writeCode(code)
-					log.info(
-						`pairing: código gerado; digite no celular em Aparelhos conectados > Conectar com número. Aguardando pareamento (até ${Math.round(
-							timeoutMs / 1000,
-						)}s)…`,
-					)
-				} catch (err) {
-					log.error({ err: String(err) }, 'pairing: falha ao solicitar o código de pareamento')
-					finish(1)
-					return
-				}
-			}
-
 			activeSock.ev.process(async (events) => {
 				if (settled) return
 				if (events['creds.update']) await saveCreds()
 
 				const update = events['connection.update']
 				if (!update) return
+
+				// O `qr` no connection.update sinaliza que o handshake Noise terminou e o server está
+				// pronto para a IQ de registro. Só AQUI o requestPairingCode pode enviar sem levar
+				// "Connection Closed" (ele usa sendNode, sem esperar resposta). Uma única vez: após o
+				// pareamento as creds ficam registradas e não se re-solicita no restart (515).
+				if (update.qr && !requested) {
+					requested = true
+					try {
+						const code = await activeSock.requestPairingCode(validNumber as string)
+						writeCode(code)
+						log.info(
+							`pairing: código gerado; digite no celular em Aparelhos conectados > Conectar com número. Aguardando pareamento (até ${Math.round(
+								timeoutMs / 1000,
+							)}s)…`,
+						)
+					} catch (err) {
+						log.error({ err: String(err) }, 'pairing: falha ao solicitar o código de pareamento')
+						finish(1)
+					}
+					return
+				}
 
 				if (update.connection === 'open') {
 					await saveCreds()
