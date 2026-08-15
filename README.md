@@ -103,22 +103,42 @@ O modo é ativado por `--headless` na linha de comando **ou** pela env
 `HEADLESS=1` (aceita `1`/`true`/`yes`). Sem nenhum dos dois, o `dist/index.js`
 sobe a TUI normalmente.
 
-### Pré-provisionar a sessão (sem QR)
+### Parear a sessão no server (pairing-code, sem QR)
 
-O headless **não exibe QR** nem faz pairing-code (ver
-[`docs/adr/0002`](docs/adr/0002-headless-pre-provisiona-auth.md)). Ele exige uma
-sessão já pareada:
+O serviço headless de longa duração **não pareia**: continua fail-fast. Quem
+estabelece a sessão é o **Comando de pareamento** one-shot, um processo à parte
+que usa o pairing-code do Baileys — sem QR, sem TUI, sem `scp` do diretório de
+auth (ver [`docs/adr/0003`](docs/adr/0003-headless-pareia-via-pairing-code.md),
+que supersede o 0002).
 
-1. Pareie **uma vez** no Modo TUI (`pnpm dev`) lendo o QR no celular.
-2. Copie a pasta `baileys_auth_info/` para o `WorkingDirectory` do server:
-   ```bash
-   scp -r ./baileys_auth_info usuario@server:/opt/wpp-tui/baileys_auth_info
-   ```
+No próprio server, dentro do `WorkingDirectory` do serviço:
 
-Se o headless receber um evento de QR (sinal de que não há sessão válida), ele
-loga **FATAL** (`sem sessão válida; pré-provisione baileys_auth_info`) e sai com
-código ≠ 0 — em vez de ficar gerando QRs num loop. Um `loggedOut` no server
-também derruba o coletor: é preciso re-provisionar a sessão manualmente.
+```bash
+pnpm pair 5511999999999          # apenas dígitos com DDI (sem +, (), -, espaços)
+# ou: make pair NUMBER=5511999999999
+```
+
+1. O comando imprime um **código de 8 caracteres no stdout** (estado e logs vão
+   para o stderr — o stdout carrega só o código).
+2. No celular: **Aparelhos conectados > Conectar com número** e digite o código.
+3. Ao conectar, a sessão é gravada em `baileys_auth_info/` e o processo sai com
+   código 0. Sem parear em **120s**, sai com código ≠ 0.
+
+Detalhes:
+
+- O comando **não sobe o Coletor** e **não exige** `WEBHOOK_URL` /
+  `WHATSAPP_WEBHOOK_SECRET` — é o caminho mínimo de login.
+- Se já existir uma sessão registrada, ele **recusa** (exit ≠ 0) para não destruir
+  uma sessão viva por engano. Use `--force` (`make pair NUMBER=… FORCE=1`) para
+  descartar a sessão atual e re-parear.
+- Número ausente (nem argumento nem env `PAIR_NUMBER`) ou inválido → erro claro e
+  exit ≠ 0, sem tocar o socket.
+
+Se o serviço headless receber um evento de QR (sinal de que não há sessão
+válida), ele loga **FATAL** (`sem sessão válida`) e sai com código ≠ 0 — em vez
+de ficar gerando QRs num loop. Um `loggedOut` no server também derruba o coletor:
+rode o Comando de pareamento de novo e reinicie o serviço (recuperação manual e
+explícita, ADR-0003).
 
 ### Variáveis obrigatórias
 
@@ -144,19 +164,28 @@ Há **dois loggers**, controlados separadamente, e toda linha carrega um campo
 Se `LOG_RETENTION_DAYS` estiver ausente/0, o boot emite um **WARN** alertando
 sobre crescimento ilimitado de disco.
 
-### Deploy via systemd
+### Deploy via systemd (`--user`)
 
-Há uma unit pronta em [`deploy/whatsapp-collector.service`](deploy/whatsapp-collector.service)
-(com comentários explicando cada diretiva e o passo de pré-provisionamento):
+O serviço roda como unit de **usuário** (`systemd --user`), com a conta do
+próprio login — **sem `sudo`** e **sem** `/etc/systemd/system/`. A unit-fonte
+está em [`deploy/whatsapp-collector.service`](deploy/whatsapp-collector.service)
+e os alvos `make svc-*` cuidam do ciclo de vida. Nenhum precisa de `sudo`,
+exceto `make svc-linger`.
 
 ```bash
-sudo cp deploy/whatsapp-collector.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now whatsapp-collector
-
-# Ler os logs (a saída JSON cai no journald):
-journalctl -u whatsapp-collector -f
+pnpm install && pnpm build        # 1. dependências + dist/
+make pair NUMBER=5511999999999    # 2. pareia a sessão (ver seção acima)
+make svc-install                  # 3. instala a unit em ~/.config/systemd/user,
+                                  #    resolve o node absoluto e habilita+inicia
+make svc-linger                   # 4. (único com sudo) roda sem login aberto
+make svc-logs                     # segue os logs (JSON no journald do usuário)
 ```
+
+Configure `~/wpp-tui/.env` (base no [`.env.example`](.env.example)) antes do
+`svc-install` — `WEBHOOK_URL` e `WHATSAPP_WEBHOOK_SECRET` são obrigatórias.
+
+Demais alvos: `svc-start`, `svc-stop`, `svc-restart`, `svc-status`,
+`svc-redeploy` (build + restart) e `svc-uninstall`.
 
 O sinal de saúde é a linha de **heartbeat** dos logs (não há endpoint HTTP
 `/health` nesta versão).

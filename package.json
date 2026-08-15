@@ -8,6 +8,7 @@
     "build": "tsup src/index.tsx --format esm",
     "start": "node --env-file-if-exists=.env dist/index.js",
     "start:headless": "node --env-file-if-exists=.env dist/index.js --headless",
+    "pair": "tsx --env-file-if-exists=.env src/index.tsx --pair",
     "typecheck": "tsc --noEmit -p tsconfig.test.json",
     "test": "tsx --test 'tests/**/*.test.ts'"
   },

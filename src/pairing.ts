@@ -1,0 +1,242 @@
+import { Boom } from '@hapi/boom'
+import fs from 'fs'
+import path from 'path'
+import P from 'pino'
+import makeWASocketReal, {
+	DisconnectReason,
+	fetchLatestBaileysVersion,
+	makeCacheableSignalKeyStore,
+	useMultiFileAuthState,
+} from '@whiskeysockets/baileys'
+
+// Comando de pareamento one-shot (ADR-0003, supersede 0002). Estabelece a sessão de WhatsApp
+// direto no server via pairing-code do Baileys — sem QR, sem TUI, sem Coletor. O operador roda
+// `pnpm pair <numero>`, recebe um código de 8 caracteres no STDOUT, digita no celular (Aparelhos
+// conectados > Conectar com número) e a sessão é gravada em baileys_auth_info/.
+//
+// Contrato de I/O: o STDOUT carrega SÓ o código (copiável); estado e logs vão para o STDERR.
+// Tudo é injetável (socket/auth/relógio/timer/streams) para ser testável sem rede — ver
+// tests/pairing.test.ts.
+
+// Valida o número: apenas dígitos com DDI (ex.: 5511999999999). Rejeita `+`, `()`, `-`, espaços e
+// qualquer coisa não numérica. Retorna o número normalizado (trim) ou null se inválido/ausente.
+export function validatePairingNumber(raw: string | undefined): string | null {
+	if (!raw) return null
+	const trimmed = raw.trim()
+	if (!/^[0-9]+$/.test(trimmed)) return null
+	// sanity de comprimento E.164: DDI + número. Fora de 8..15 dígitos é quase certo um engano.
+	if (trimmed.length < 8 || trimmed.length > 15) return null
+	return trimmed
+}
+
+// Extrai o número e a flag --force do argv, com fallback do número por env (PAIR_NUMBER).
+// O número vem do token seguinte a `--pair` (desde que não seja outra flag); se ausente, cai no env.
+export function resolvePairingInput(
+	argv: string[],
+	env: NodeJS.ProcessEnv,
+): { number: string | undefined; force: boolean } {
+	const force = argv.includes('--force')
+	const i = argv.indexOf('--pair')
+	let number: string | undefined
+	if (i !== -1 && argv[i + 1] && !argv[i + 1].startsWith('--')) number = argv[i + 1]
+	if (!number) number = env.PAIR_NUMBER?.trim() || undefined
+	return { number, force }
+}
+
+export interface PairingDeps {
+	number: string | undefined // número cru (validado aqui dentro; inválido/ausente → exit 1, sem socket)
+	force: boolean // re-pareia por cima de uma sessão registrada (descarta a atual)
+	authDir?: string // padrão "baileys_auth_info" (o mesmo do serviço)
+	logger: import('pino').Logger // logger de estado/erros (STDERR); o comando deriva component:'pairing'
+	baileysLogger: import('pino').Logger // passado pro makeWASocket + key store
+	makeSocket?: typeof makeWASocketReal // injetável p/ testes
+	loadAuthState?: typeof useMultiFileAuthState // injetável p/ testes
+	fetchVersion?: typeof fetchLatestBaileysVersion // injetável p/ testes (evita rede)
+	writeCode?: (code: string) => void // padrão: escreve o código cru + \n no STDOUT (copiável/pipe)
+	announceCode?: (code: string, waitSeconds: number) => void // padrão: banner humano no STDERR
+	timeoutMs?: number // padrão 120000; sem `open` até lá → exit 1
+	setTimer?: (fn: () => void, ms: number) => { unref?: () => void } // injetável p/ testes
+	// eslint-disable-next-line @typescript-eslint/no-explicit-any
+	clearTimer?: (t: any) => void // injetável p/ testes
+	rmAuthDir?: (dir: string) => void // padrão fs.rmSync recursivo; injetável p/ testes
+}
+
+// Banner humano do código no STDERR (fd 2): mantém o STDOUT limpo (só o código cru, p/ pipe) e ainda
+// assim dá um alvo VISÍVEL no terminal, mesmo com o Baileys em trace. O código de 8 chars sai
+// hifenizado (4-4), como o WhatsApp mostra. Escreve em fd 2 direto (não via pino) pra não virar JSON.
+export function formatPairingCode(code: string): string {
+	return code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code
+}
+
+function defaultAnnounceCode(code: string, waitSeconds: number): void {
+	const shown = formatPairingCode(code)
+	const line = '─'.repeat(shown.length + 8)
+	const banner =
+		`\n  ┌${line}┐\n` +
+		`  │    ${shown}    │\n` +
+		`  └${line}┘\n` +
+		`  No celular: WhatsApp › Aparelhos conectados › Conectar um aparelho › Conectar com número.\n` +
+		`  Digite o código acima. Aguardando pareamento (até ${waitSeconds}s)…\n\n`
+	process.stderr.write(banner)
+}
+
+// Executa o pareamento e resolve com o código de saída do processo (0 sucesso, != 0 falha).
+// Não chama process.exit — quem chama (entrypoint) decide. Assim o teste apenas inspeciona o retorno.
+export async function runPairing(deps: PairingDeps): Promise<number> {
+	const log = deps.logger.child({ component: 'pairing' })
+
+	// 1) Validação do número ANTES de tocar o socket (requisito: inválido/ausente não abre socket).
+	const validNumber = validatePairingNumber(deps.number)
+	if (!validNumber) {
+		log.error(
+			'pairing: número inválido ou ausente. Passe apenas dígitos com DDI — ex.: 5511999999999 — via `pnpm pair <numero>` ou a env PAIR_NUMBER.',
+		)
+		return 1
+	}
+
+	const authDir = path.resolve(deps.authDir ?? 'baileys_auth_info')
+	const loadAuthState = deps.loadAuthState ?? useMultiFileAuthState
+	const makeSocket = deps.makeSocket ?? makeWASocketReal
+	const fetchVersion = deps.fetchVersion ?? fetchLatestBaileysVersion
+	const writeCode = deps.writeCode ?? ((c: string) => void process.stdout.write(c + '\n'))
+	const announceCode = deps.announceCode ?? defaultAnnounceCode
+	const setTimer = deps.setTimer ?? ((fn: () => void, ms: number) => setTimeout(fn, ms))
+	const clearTimer = deps.clearTimer ?? ((t: unknown) => clearTimeout(t as ReturnType<typeof setTimeout>))
+	const rmAuthDir =
+		deps.rmAuthDir ??
+		((dir: string) => {
+			if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true })
+		})
+	const timeoutMs = deps.timeoutMs ?? 120_000
+
+	// 2) Carrega o estado de auth do MESMO diretório do serviço. Isso só lê arquivos — nada de rede.
+	let { state, saveCreds } = await loadAuthState(authDir)
+
+	// 3) Sessão já registrada: recusa sem --force (não chama requestPairingCode). Com --force, descarta
+	//    o diretório e recarrega DO ZERO — não só quando `registered`. Um diretório "sujo" mas NÃO
+	//    registrado (ex.: `me`/noiseKey de um pareamento abortado) faz o Baileys tentar LOGIN em vez de
+	//    registrar: ele não emite `qr`, o requestPairingCode nunca dispara e o WhatsApp derruba (401).
+	//    O pareamento limpo exige um authDir vazio → creds novas, sem `me` → Baileys entra em registro.
+	if (state.creds.registered && !deps.force) {
+		log.error(
+			`pairing: já existe uma sessão registrada em ${authDir}. Use --force para re-parear (isso descarta a sessão atual).`,
+		)
+		return 1
+	}
+	if (deps.force) {
+		log.warn(`pairing: --force; descartando ${authDir} e re-pareando do zero.`)
+		rmAuthDir(authDir)
+		;({ state, saveCreds } = await loadAuthState(authDir))
+	}
+
+	const { version } = await fetchVersion()
+
+	// 4) Conecta e, no 1º `qr` (handshake pronto), solicita o pairing-code; aguarda `connection: 'open'`
+	//    → grava creds → exit 0. Timeout (120s) → exit 1. Um `close` com `restartRequired` (515) é
+	//    ESPERADO logo após o code ser aceito: reconecta sem re-solicitar o code (o mesmo padrão de
+	//    core.ts). Qualquer outro `close` antes do open é falha → exit 1.
+	return await new Promise<number>((resolve) => {
+		let settled = false
+		let requested = false
+		let sock: ReturnType<typeof makeSocket> | null = null
+		let timer: { unref?: () => void } | undefined
+
+		const finish = (exitCode: number) => {
+			if (settled) return
+			settled = true
+			if (timer) clearTimer(timer)
+			sock?.end?.(undefined)
+			resolve(exitCode)
+		}
+
+		async function connect() {
+			if (settled) return
+
+			const activeSock = makeSocket({
+				version,
+				logger: deps.baileysLogger,
+				auth: {
+					creds: state.creds,
+					keys: makeCacheableSignalKeyStore(state.keys, deps.baileysLogger),
+				},
+			})
+			sock = activeSock
+
+			activeSock.ev.process(async (events) => {
+				if (settled) return
+				if (events['creds.update']) await saveCreds()
+
+				const update = events['connection.update']
+				if (!update) return
+
+				// O `qr` no connection.update sinaliza que o handshake Noise terminou e o server está
+				// pronto para a IQ de registro. Só AQUI o requestPairingCode pode enviar sem levar
+				// "Connection Closed" (ele usa sendNode, sem esperar resposta). Uma única vez: após o
+				// pareamento as creds ficam registradas e não se re-solicita no restart (515).
+				if (update.qr && !requested) {
+					requested = true
+					try {
+						const code = await activeSock.requestPairingCode(validNumber as string)
+						const waitSeconds = Math.round(timeoutMs / 1000)
+						writeCode(code) // STDOUT: código cru, sozinho (copiável / pipe)
+						announceCode(code, waitSeconds) // STDERR: banner humano, visível no terminal
+						log.info({ code: formatPairingCode(code), waitSeconds }, 'pairing: código de pareamento gerado')
+					} catch (err) {
+						log.error({ err: String(err) }, 'pairing: falha ao solicitar o código de pareamento')
+						finish(1)
+					}
+					return
+				}
+
+				if (update.connection === 'open') {
+					await saveCreds()
+					log.info({ me: activeSock.user?.id }, `pairing: conectado; sessão gravada em ${authDir}.`)
+					finish(0)
+				}
+				if (update.connection === 'close') {
+					const code = (update.lastDisconnect?.error as Boom)?.output?.statusCode
+					if (code === DisconnectReason.restartRequired) {
+						// Esperado após o code ser aceito: recria o socket e segue aguardando o open.
+						log.info('pairing: restart requerido pós-code; reconectando…')
+						void connect()
+						return
+					}
+					log.error(
+						{ code, err: String(update.lastDisconnect?.error) },
+						'pairing: conexão encerrada antes de o pareamento concluir.',
+					)
+					finish(1)
+				}
+			})
+		}
+
+		// connect() cria o socket de forma síncrona até o 1º await; só então armamos o timeout —
+		// assim ele já encontra um socket vivo para encerrar (e o teste de timeout observa o end()).
+		void connect()
+
+		timer = setTimer(() => {
+			log.error(
+				`pairing: timeout aguardando o pareamento; nenhuma conexão aberta em ${Math.round(timeoutMs / 1000)}s.`,
+			)
+			finish(1)
+		}, timeoutMs)
+		timer.unref?.()
+	})
+}
+
+// Ponte CLI: monta os deps reais (logger em STDERR, socket/auth reais) e retorna o exit code.
+// O logger do pareamento escreve no STDERR (fd 2) para manter o STDOUT limpo (só o código).
+//
+// `pair` é interativo e one-shot: o trace do Baileys (XML de handshake, pings de 30s) só ENTERRA o
+// código no terminal. Por isso o Baileys aqui fica em 'warn', ignorando BAILEYS_LOG_LEVEL do .env
+// (que costuma ficar em 'trace' pro coletor 24/7). Escape p/ depurar o pareamento: PAIR_DEBUG=1
+// reativa o nível do BAILEYS_LOG_LEVEL (ou 'debug'). O logger do próprio comando segue o LOG_LEVEL.
+export async function runPairingCli(argv: string[], env: NodeJS.ProcessEnv): Promise<number> {
+	const { number, force } = resolvePairingInput(argv, env)
+
+	const logger = P({ level: env.LOG_LEVEL || 'info' }, P.destination(2))
+	const baileysLevel = env.PAIR_DEBUG ? env.BAILEYS_LOG_LEVEL || 'debug' : 'warn'
+	const baileysLogger = logger.child({ component: 'baileys' }, { level: baileysLevel })
+
+	return runPairing({ number, force, logger, baileysLogger })
+}
