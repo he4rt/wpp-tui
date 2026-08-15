@@ -22,7 +22,7 @@ extract-payload:
 
 # Sobe o coletor em modo headless (sem TUI), direto do código-fonte via tsx.
 # Logs em JSON no stdout. Exige WEBHOOK_URL + WHATSAPP_WEBHOOK_SECRET no .env
-# (fail-fast se faltar) e baileys_auth_info pré-provisionado (ADR-0002).
+# (fail-fast se faltar) e a sessão já pareada via `make pair` (ADR-0003).
 headless:
 	pnpm exec tsx --env-file-if-exists=.env src/index.tsx --headless
 

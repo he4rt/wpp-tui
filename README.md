@@ -164,19 +164,28 @@ Há **dois loggers**, controlados separadamente, e toda linha carrega um campo
 Se `LOG_RETENTION_DAYS` estiver ausente/0, o boot emite um **WARN** alertando
 sobre crescimento ilimitado de disco.
 
-### Deploy via systemd
+### Deploy via systemd (`--user`)
 
-Há uma unit pronta em [`deploy/whatsapp-collector.service`](deploy/whatsapp-collector.service)
-(com comentários explicando cada diretiva e o passo de pré-provisionamento):
+O serviço roda como unit de **usuário** (`systemd --user`), com a conta do
+próprio login — **sem `sudo`** e **sem** `/etc/systemd/system/`. A unit-fonte
+está em [`deploy/whatsapp-collector.service`](deploy/whatsapp-collector.service)
+e os alvos `make svc-*` cuidam do ciclo de vida. Nenhum precisa de `sudo`,
+exceto `make svc-linger`.
 
 ```bash
-sudo cp deploy/whatsapp-collector.service /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now whatsapp-collector
-
-# Ler os logs (a saída JSON cai no journald):
-journalctl -u whatsapp-collector -f
+pnpm install && pnpm build        # 1. dependências + dist/
+make pair NUMBER=5511999999999    # 2. pareia a sessão (ver seção acima)
+make svc-install                  # 3. instala a unit em ~/.config/systemd/user,
+                                  #    resolve o node absoluto e habilita+inicia
+make svc-linger                   # 4. (único com sudo) roda sem login aberto
+make svc-logs                     # segue os logs (JSON no journald do usuário)
 ```
+
+Configure `~/wpp-tui/.env` (base no [`.env.example`](.env.example)) antes do
+`svc-install` — `WEBHOOK_URL` e `WHATSAPP_WEBHOOK_SECRET` são obrigatórias.
+
+Demais alvos: `svc-start`, `svc-stop`, `svc-restart`, `svc-status`,
+`svc-redeploy` (build + restart) e `svc-uninstall`.
 
 O sinal de saúde é a linha de **heartbeat** dos logs (não há endpoint HTTP
 `/health` nesta versão).
