@@ -319,16 +319,30 @@ resultado: not_authorized
 
 | Unidade | Arquivo | O que faz | Puro? |
 |---|---|---|---|
-| `normalizePhone` | `target-resolver.ts` | `"+55 00 90000-0002"` → `"5500900000002"`; valida 8–15 dígitos. | sim |
+| `normalizePhone` | `command-core.ts` | `"+55 00 90000-0002"` → `"5500900000002"`; valida 8–15 dígitos. | sim |
 | `resolveTarget` | `target-resolver.ts` | reply · menção · telefone → `ResolvedTarget`. | sim (diretório injetado) |
 | `CommunityDirectory` | `community-directory.ts` | Snapshot com TTL: grupos, participantes, `phoneNumber`, admins da comunidade. `findByPhone`, `findByLid`, `groupsOf`. | não (1 chamada de rede por TTL) |
 | `ModerationDenylist` | `moderation-denylist.ts` | `logs/denylist.json`; índice duplo por `@lid` e por telefone; `add`/`remove`/`match`. | não (I/O) |
 | `buildReport` / `formatReport` | `moderation-report.ts` | Monta o objeto do relatório e o texto do grupo de log. | sim |
-| `requireCommunityAdmin` | `command-handler.ts` | Metadata do grupo + da comunidade; confirma admin no topo. | não |
-| `deleteCommandMessage` | `command-handler.ts` | Revoga o comando fora dos grupos privados de admin. | não |
-| `createBanHandler` | `ban-command.ts` | Domínio de `/ban` e `/kick`. | não |
-| `createUnbanHandler` | `unban-command.ts` | Domínio de `/unban`. | não |
-| `createDenylistEnforcer` | `denylist-enforcer.ts` | `group-participants.update` `add` → remoção automática. | não |
+| `requireCommunityAdmin` | `command-handler.ts` | View do escopo + confirma admin no topo. | não |
+| visibilidade | `command-handler.ts` | Revoga o comando fora dos grupos privados de admin e publica o relatório. Vive na casca → vale para todo comando. | não |
+| `resolveModerationConfig` | `moderation-config.ts` | Lê `MODERATION_GROUP_JID` / `LOG_GROUP_JID`; decide onde apagar. | sim |
+| `removalDomain` | `removal-command.ts` | Regra compartilhada de remoção, parametrizada por alcance. | não |
+| `createBanHandler` | `ban-command.ts` | Casca: alcance `community` + denylist. | não |
+| `createKickHandler` | `kick-command.ts` | Casca: alcance `group`, sem denylist. | não |
+| `createUnbanHandler` | `unban-command.ts` | Domínio de `/unban` (só denylist, sem rede). | não |
+| `createDenylistEnforcer` | `denylist-enforcer.ts` | `group-participants.update` `add` → remoção automática, com dedupe de 10s. | não |
+
+### Divergências da implementação
+
+Registradas aqui para a spec continuar descrevendo o que existe:
+
+- **`normalizePhone` mora em `command-core.ts`**, não no resolver: o diretório da comunidade também precisa dele para indexar `participants[].phoneNumber`.
+- **`removal-command.ts` não estava previsto.** Surgiu ao implementar o `/kick`: os dois comandos diferem só no alcance, e duplicar a regra convidaria a divergência silenciosa.
+- **`moderation-config.ts` não estava previsto** — a resolução das duas envs virou unidade pura própria, testável sem socket.
+- **Telefone multi-token.** `/ban +55 00 90000-0001 spam` chega ao parser como tokens separados. `takePhone` junta o maior prefixo telefônico que forma um número válido, e só tenta isso quando o primeiro token sozinho não serve — senão `/ban 5500900000002 2024` engoliria o ano no número.
+- **Fallback `lidMapping.getLIDForPN` não foi implementado.** Mostrou-se desnecessário: o `group-participants.update` já traz `phoneNumber` junto do `@lid` (confirmado nos logs reais), então o pré-ban casa pelo telefone sem consulta extra. Fica disponível caso apareça um caso que o telefone não resolva.
+- **`/kick` usa a mesma autorização do `/ban`** (admin da comunidade). Graduar poder por tipo de comando deixaria a regra imprevisível para os moderadores.
 
 ### Ajuste em `command-core.ts`
 
@@ -394,6 +408,10 @@ Estilo dos `tests/collector/*` existentes: `node:test` + socket falso injetado, 
    mensagem fica visível.
 5. **Mass-ban por conta comprometida.** A denylist torna o ban difícil de reverter em lote. O
    `/unban` cobre o desfazer individual; rate limit ficou fora de escopo.
+7. **Denylist gravada antes da remoção.** Num 403 a pessoa fica registrada como banida sem ter
+   saído — e só será removida quando reentrar. É o trade-off escolhido: perder a decisão de
+   moderação por falha de permissão seria pior. O log registra os dois fatos
+   (`remove_rejected` + `denylisted: true`), então a inconsistência fica visível.
 6. **Migração.** A denylist nasce vazia: bans anteriores a esta versão não são retroativos.
 
 ---
