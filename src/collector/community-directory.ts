@@ -29,7 +29,8 @@ export interface DirectorySocket {
 
 // Um membro localizado no diretório, já com os grupos onde ele aparece.
 export interface DirectoryMember {
-	jid: string // normalizado (@lid ou @s.whatsapp.net)
+	jid: string // normalizado (@lid ou @s.whatsapp.net) — usado para comparar
+	rawId: string // id exatamente como veio na lista de participantes — usado para remover
 	phone: string | null // só dígitos
 	groups: string[] // JIDs dos grupos onde está
 }
@@ -83,7 +84,7 @@ export function buildView(snapshot: Record<string, DirGroupMetadata>, groupJid: 
 			const jid = jidNormalizedUser(p.id)
 			let member = byJid.get(jid)
 			if (!member) {
-				member = { jid, phone: normalizePhone(p.phoneNumber), groups: [] }
+				member = { jid, rawId: p.id, phone: normalizePhone(p.phoneNumber), groups: [] }
 				byJid.set(jid, member)
 			}
 			// o phoneNumber pode vir só em alguns grupos — o primeiro que aparecer vale.

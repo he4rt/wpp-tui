@@ -17,6 +17,7 @@ import { createOutbox } from './outbox.js'
 import { createEventRouter } from './event-router.js'
 import { createBanHandler } from './ban-command.js'
 import { createAdminHandler } from './admin-command.js'
+import { createCommunityDirectory } from './community-directory.js'
 import { startWebhookSender } from './webhook-sender.js'
 import { startHeartbeat } from './heartbeat.js'
 import type { ConnectionStatus, GroupInfo } from '../types.js'
@@ -183,10 +184,15 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 
 		sock = activeSock
 
+		// diretório da comunidade: um snapshot por conexão, compartilhado pelos comandos que
+		// precisam enxergar além do grupo onde foram digitados (quem está onde, quem é admin do topo).
+		const directory = createCommunityDirectory({ sock: activeSock })
+
 		// handler do comando /ban — usa o socket ativo; silencioso, erros vão pro log de auditoria.
 		const banHandler = createBanHandler({
 			sock: activeSock,
 			logger: deps.logger.child({ component: 'ban' }),
+			directory,
 		})
 
 		// handler do comando /admin — usa o socket ativo; silencioso, erros vão pro log de auditoria.
@@ -203,6 +209,12 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 				saveEvent(eventName, eventData)
 				router?.handleEvent(eventName, eventData)
 				deps.onEvent?.(eventName, eventData)
+			}
+
+			// entrada/saída de membro invalida o diretório: o próximo comando refaz o snapshot em vez
+			// de decidir sobre uma lista de participantes vencida (o refetch é lazy — só na consulta).
+			if (events['group-participants.update'] || events['groups.update']) {
+				directory.invalidate()
 			}
 
 			// comandos /ban e /admin: best-effort, não bloqueiam nem derrubam a coleta (handlers nunca lançam).

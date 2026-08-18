@@ -341,3 +341,83 @@ test('messages.upsert com /admin on de admin aciona groupSettingUpdate (fiação
 
 	await handle.stop()
 })
+
+test('messages.upsert com /ban por telefone remove da COMUNIDADE (fiação core → diretório → ban)', async () => {
+	const fake = makeFakeSocket({
+		user: { id: '55@s.whatsapp.net', name: 'Bot' },
+		groups: {
+			'com@g.us': { id: 'com@g.us', subject: 'Comunidade', isCommunity: true, participants: [{ id: 'chefe@lid', admin: 'superadmin' }] },
+			'g1@g.us': { id: 'g1@g.us', linkedParent: 'com@g.us', participants: [{ id: 'chefe@lid', admin: null }] },
+			'g2@g.us': {
+				id: 'g2@g.us',
+				linkedParent: 'com@g.us',
+				participants: [{ id: 'alvo@lid', phoneNumber: '5500900000002@s.whatsapp.net', admin: null }],
+			},
+		},
+	})
+	const handle = startCollectorCore({
+		authDir: 'baileys_auth_info',
+		outboxPath: 'outbox.db',
+		logger: silentLogger,
+		baileysLogger: silentLogger,
+		webhook: null,
+		makeSocket: makeFakeMakeSocket(fake.sock),
+	})
+
+	// o alvo está no g2 e o comando é dado no g1 — o caso que falhava com no_target.
+	await fake.emit({
+		'messages.upsert': {
+			type: 'notify',
+			messages: [{
+				key: { remoteJid: 'g1@g.us', participant: 'chefe@lid', id: 'CMD1' },
+				message: { conversation: '/ban 5500900000002 spam' },
+			}],
+		},
+	})
+	await flush()
+
+	assert.deepEqual(fake.calls.removedCommunity, [{ jid: 'com@g.us', jids: ['alvo@lid'] }])
+	assert.deepEqual(fake.calls.removedGroup, [])
+
+	await handle.stop()
+})
+
+test('group-participants.update invalida o diretório (próximo comando refaz o snapshot)', async () => {
+	const fake = makeFakeSocket({
+		user: { id: '55@s.whatsapp.net', name: 'Bot' },
+		groups: {
+			'g1@g.us': { id: 'g1@g.us', participants: [{ id: 'chefe@lid', admin: 'admin' }, { id: 'alvo@lid', admin: null }] },
+		},
+	})
+	const handle = startCollectorCore({
+		authDir: 'baileys_auth_info',
+		outboxPath: 'outbox.db',
+		logger: silentLogger,
+		baileysLogger: silentLogger,
+		webhook: null,
+		makeSocket: makeFakeMakeSocket(fake.sock),
+	})
+
+	const ban = {
+		'messages.upsert': {
+			type: 'notify',
+			messages: [{
+				key: { remoteJid: 'g1@g.us', participant: 'chefe@lid', id: 'CMD1' },
+				message: { extendedTextMessage: { text: '/ban', contextInfo: { participant: 'alvo@lid', stanzaId: 'S1' } } },
+			}],
+		},
+	}
+
+	await fake.emit(ban)
+	await flush()
+	const afterFirst = fake.calls.fetchedGroups
+
+	// sem invalidação o TTL seguraria o snapshot; o evento de participante força o refetch.
+	await fake.emit({ 'group-participants.update': { id: 'g1@g.us', action: 'add', participants: [{ id: 'novo@lid' }] } })
+	await fake.emit(ban)
+	await flush()
+
+	assert.equal(fake.calls.fetchedGroups, afterFirst + 1)
+
+	await handle.stop()
+})
