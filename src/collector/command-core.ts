@@ -61,3 +61,13 @@ export function parseCommand(text: string): ParsedCommand | null {
 export function isAdmin(p?: { admin?: 'admin' | 'superadmin' | null } | null): boolean {
 	return p?.admin === 'admin' || p?.admin === 'superadmin'
 }
+
+// Telefone em dígitos puros, ou null se não parecer um número discável.
+// Aceita as formas que um moderador digita ("+55 00 90000-0002", "(11) 99999-9999") e também o
+// JID cru do Baileys ("5500900000002@s.whatsapp.net"), de onde o phoneNumber dos participantes vem.
+export function normalizePhone(raw: string | null | undefined): string | null {
+	if (!raw) return null
+	const digits = raw.split('@')[0].split(':')[0].replace(/\D/g, '')
+	// 8 dígitos cobre número local curto; 15 é o teto do E.164.
+	return digits.length >= 8 && digits.length <= 15 ? digits : null
+}
