@@ -20,6 +20,7 @@ export interface CmdMessageKey {
 export interface CmdMessage {
 	key?: CmdMessageKey | null
 	message?: CmdMessageContent | null
+	pushName?: string | null // nome que o autor exibe — usado no relatório de moderação
 }
 export interface CmdParticipant {
 	id: string

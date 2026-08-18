@@ -7,7 +7,7 @@
 // da comunidade — previsibilidade vale mais que graduar poder por tipo de comando.
 
 import { messageText, parseCommand, type CmdMessage } from './command-core.js'
-import type { CommandLogger } from './command-handler.js'
+import type { CommandLogger, CommandVisibility } from './command-handler.js'
 import type { CommunityDirectory } from './community-directory.js'
 import { createRemovalHandler, type RemovalSocket } from './removal-command.js'
 
@@ -20,5 +20,9 @@ export function parseKickCommand(text: string): boolean {
 	return parseCommand(text)?.name === 'kick'
 }
 
-export const createKickHandler = (deps: { sock: KickSocket; logger: CommandLogger; directory?: CommunityDirectory }) =>
-	createRemovalHandler({ name: 'kick', reach: 'group', ...deps })
+export const createKickHandler = (deps: {
+	sock: KickSocket
+	logger: CommandLogger
+	directory?: CommunityDirectory
+	visibility?: CommandVisibility
+}) => createRemovalHandler({ name: 'kick', reach: 'group', ...deps })

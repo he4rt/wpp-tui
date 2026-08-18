@@ -6,7 +6,7 @@
 // Segue o mesmo espírito de command-handler.ts: a casca genérica cuida do loop e da auditoria;
 // aqui mora a regra de remoção; os arquivos ban-command.ts e kick-command.ts são cascas finas.
 
-import { createCommandHandler, requireCommunityAdmin, type CommandContext, type CommandLogger } from './command-handler.js'
+import { createCommandHandler, requireCommunityAdmin, type CommandContext, type CommandLogger, type CommandVisibility } from './command-handler.js'
 import { createCommunityDirectory, type CommunityDirectory, type DirectorySocket } from './community-directory.js'
 import { resolveTarget } from './target-resolver.js'
 import type { ModerationDenylist } from './moderation-denylist.js'
@@ -143,11 +143,13 @@ export const createRemovalHandler = (deps: {
 	directory?: CommunityDirectory
 	denylist?: ModerationDenylist
 	now?: () => Date
+	visibility?: CommandVisibility
 }) =>
 	createCommandHandler({
 		name: deps.name,
 		sock: deps.sock,
 		logger: deps.logger,
+		visibility: deps.visibility,
 		domain: removalDomain({
 			directory: deps.directory ?? createCommunityDirectory({ sock: deps.sock }),
 			reach: deps.reach,

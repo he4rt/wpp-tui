@@ -10,7 +10,7 @@
 // caminho normal deste comando, não a exceção.
 
 import { messageText, parseCommand, type CmdMessage } from './command-core.js'
-import { createCommandHandler, requireCommunityAdmin, type CommandContext, type CommandLogger } from './command-handler.js'
+import { createCommandHandler, requireCommunityAdmin, type CommandContext, type CommandLogger, type CommandVisibility } from './command-handler.js'
 import { createCommunityDirectory, type CommunityDirectory, type DirectorySocket } from './community-directory.js'
 import { resolveTarget } from './target-resolver.js'
 import type { ModerationDenylist } from './moderation-denylist.js'
@@ -60,10 +60,12 @@ export const createUnbanHandler = (deps: {
 	logger: CommandLogger
 	denylist: ModerationDenylist
 	directory?: CommunityDirectory
+	visibility?: CommandVisibility
 }) =>
 	createCommandHandler({
 		name: 'unban',
 		sock: deps.sock,
 		logger: deps.logger,
+		visibility: deps.visibility,
 		domain: unbanDomain(deps.directory ?? createCommunityDirectory({ sock: deps.sock }), deps.denylist),
 	})

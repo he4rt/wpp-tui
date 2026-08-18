@@ -5,7 +5,7 @@
 // A casca (loop best-effort, guarda de grupo/notify, audit, autorização) vem de command-handler.
 
 import { messageText, parseCommand, type CmdParticipant } from './command-core.js'
-import { createCommandHandler, requireGroupAdmin, type CommandContext, type CommandLogger } from './command-handler.js'
+import { createCommandHandler, requireGroupAdmin, type CommandContext, type CommandLogger, type CommandVisibility } from './command-handler.js'
 
 // 'on' | 'off' se for o comando /admin (ou !admin) com argumento válido; senão null.
 export function parseAdminAction(text: string): 'on' | 'off' | null {
@@ -55,5 +55,5 @@ const adminDomain = async ({ msg, groupJid, actor, sock, audit: baseAudit }: Com
 }
 
 // best-effort: nunca lança (não pode derrubar a coleta). Cada msg do lote é tratada isolada.
-export const createAdminHandler = (deps: { sock: AdminSocket; logger: CommandLogger }) =>
-	createCommandHandler({ name: 'admin', sock: deps.sock, logger: deps.logger, domain: adminDomain })
+export const createAdminHandler = (deps: { sock: AdminSocket; logger: CommandLogger; visibility?: CommandVisibility }) =>
+	createCommandHandler({ name: 'admin', sock: deps.sock, logger: deps.logger, visibility: deps.visibility, domain: adminDomain })

@@ -40,6 +40,7 @@ function makeFakeSocket(opts: {
 		removedGroup: [] as Array<{ jid: string; jids: string[] }>,
 		removedCommunity: [] as Array<{ jid: string; jids: string[] }>,
 		settingUpdates: [] as Array<{ jid: string; setting: string }>,
+		deleted: [] as Array<{ jid: string; id: string }>,
 	}
 	const sock: any = {
 		user: opts.user,
@@ -64,8 +65,12 @@ function makeFakeSocket(opts: {
 		async groupSettingUpdate(jid: string, setting: string) {
 			calls.settingUpdates.push({ jid, setting })
 		},
-		async sendMessage(jid: string, content: { text: string }) {
-			calls.sent.push({ jid, text: content.text })
+		async sendMessage(jid: string, content: { text?: string; delete?: { id?: string } }) {
+			if (content.delete) {
+				calls.deleted.push({ jid, id: content.delete.id ?? '' })
+				return
+			}
+			calls.sent.push({ jid, text: content.text ?? '' })
 		},
 		end() {
 			calls.end += 1
@@ -560,6 +565,63 @@ test('/unban tira da denylist e a reentrada volta a ser permitida (fiação core
 	await flush()
 
 	assert.equal(fake.calls.removedCommunity.length, antes, 'nenhuma remoção nova após o /unban')
+
+	await handle.stop()
+})
+
+test('comando em grupo comum é apagado e reportado no grupo de log (fiação core → visibilidade)', async () => {
+	const MOD = 'mod@g.us'
+	const LOG = 'log@g.us'
+	const fake = makeFakeSocket({
+		user: { id: '55@s.whatsapp.net', name: 'Bot' },
+		groups: {
+			'com@g.us': { id: 'com@g.us', isCommunity: true, participants: [{ id: 'chefe@lid', admin: 'superadmin' }] },
+			'g1@g.us': {
+				id: 'g1@g.us',
+				subject: 'Grupo Geral',
+				linkedParent: 'com@g.us',
+				participants: [{ id: 'chefe@lid', admin: null }, { id: 'alvo@lid', admin: null }],
+			},
+			[MOD]: { id: MOD, linkedParent: 'com@g.us', participants: [{ id: 'chefe@lid', admin: 'admin' }, { id: 'alvo@lid', admin: null }] },
+		},
+	})
+	const handle = startCollectorCore({
+		authDir: 'baileys_auth_info',
+		outboxPath: 'outbox.db',
+		logger: silentLogger,
+		baileysLogger: silentLogger,
+		webhook: null,
+		moderation: { moderationGroupJid: MOD, logGroupJid: LOG },
+		makeSocket: makeFakeMakeSocket(fake.sock),
+	})
+
+	const ban = (group: string) => ({
+		'messages.upsert': {
+			type: 'notify',
+			messages: [{
+				key: { remoteJid: group, participant: 'chefe@lid', id: 'CMD1' },
+				pushName: 'Clinton',
+				message: { extendedTextMessage: { text: '/ban', contextInfo: { participant: 'alvo@lid', stanzaId: 'S1' } } },
+			}],
+		},
+	})
+
+	await fake.emit(ban('g1@g.us'))
+	await flush()
+
+	// apagou o comando do grupo comum
+	assert.deepEqual(fake.calls.deleted, [{ jid: 'g1@g.us', id: 'CMD1' }])
+	// e publicou o relatório no grupo de log
+	const report = fake.calls.sent.find((m) => m.jid === LOG)
+	assert.ok(report, 'deveria ter publicado no grupo de log')
+	assert.match(report!.text, /\/ban · removed/)
+	assert.match(report!.text, /por: Clinton/)
+	assert.match(report!.text, /comando apagado ✓/)
+
+	// no grupo de moderação o comando é preservado
+	await fake.emit(ban(MOD))
+	await flush()
+	assert.equal(fake.calls.deleted.length, 1, 'nada apagado no grupo de moderação')
 
 	await handle.stop()
 })
