@@ -21,7 +21,7 @@ Scan the QR code with WhatsApp > Settings > Linked Devices. On subsequent runs i
 │ > # General            (343) ││ 18:36 danielhe4rt  eae   │
 │   # He4rt Delas 💕      (52) ││ 18:37 Clinton      oi    │
 │   # Vagas             (343) ││ 18:37 Bruna     🖼️ sticker│
-│   # He4rt Developers   (89) ││ 18:38 danielhe4rt  📊 PHP │
+│   # Comunidade Exemplo   (89) ││ 18:38 danielhe4rt  📊 PHP │
 │   @ danielhe4rt              ││   ■ Sim!! (3)            │
 │                              ││   □ Não (correto) (5)    │
 │                              ││ 18:39 Mina    🗳️ → Sim   │
@@ -114,8 +114,8 @@ que supersede o 0002).
 No próprio server, dentro do `WorkingDirectory` do serviço:
 
 ```bash
-pnpm pair 5511999999999          # apenas dígitos com DDI (sem +, (), -, espaços)
-# ou: make pair NUMBER=5511999999999
+pnpm pair 5500900000002          # apenas dígitos com DDI (sem +, (), -, espaços)
+# ou: make pair NUMBER=5500900000002
 ```
 
 1. O comando imprime um **código de 8 caracteres no stdout** (estado e logs vão
@@ -174,7 +174,7 @@ exceto `make svc-linger`.
 
 ```bash
 pnpm install && pnpm build        # 1. dependências + dist/
-make pair NUMBER=5511999999999    # 2. pareia a sessão (ver seção acima)
+make pair NUMBER=5500900000002    # 2. pareia a sessão (ver seção acima)
 make svc-install                  # 3. instala a unit em ~/.config/systemd/user,
                                   #    resolve o node absoluto e habilita+inicia
 make svc-linger                   # 4. (único com sudo) roda sem login aberto

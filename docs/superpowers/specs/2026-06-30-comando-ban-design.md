@@ -126,7 +126,7 @@ messages.upsert (type=notify)
 
 ### Happy path — comunidade
 
-- **Dado** que um admin de "Vagas" (subgrupo da comunidade He4rt) responde a uma mensagem do Fulano
+- **Dado** que um admin de "Vagas" (subgrupo da comunidade de exemplo) responde a uma mensagem do Fulano
   com `/ban`, **e** o bot é admin da comunidade,
 - **Quando** o `messages.upsert` chega,
 - **Então** o bot chama `communityParticipantsUpdate(<comunidade>, [<fulano>], 'remove')`, o Fulano
