@@ -16,6 +16,7 @@ import { startRetention } from '../retention.js'
 import { createOutbox } from './outbox.js'
 import { createEventRouter } from './event-router.js'
 import { createBanHandler } from './ban-command.js'
+import { createKickHandler } from './kick-command.js'
 import { createAdminHandler } from './admin-command.js'
 import { createCommunityDirectory } from './community-directory.js'
 import { startWebhookSender } from './webhook-sender.js'
@@ -195,6 +196,13 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 			directory,
 		})
 
+		// handler do comando /kick — mesma regra do /ban, alcance limitado ao grupo onde foi digitado.
+		const kickHandler = createKickHandler({
+			sock: activeSock,
+			logger: deps.logger.child({ component: 'kick' }),
+			directory,
+		})
+
 		// handler do comando /admin — usa o socket ativo; silencioso, erros vão pro log de auditoria.
 		const adminHandler = createAdminHandler({
 			sock: activeSock,
@@ -217,9 +225,10 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 				directory.invalidate()
 			}
 
-			// comandos /ban e /admin: best-effort, não bloqueiam nem derrubam a coleta (handlers nunca lançam).
+			// comandos de moderação: best-effort, não bloqueiam nem derrubam a coleta (handlers nunca lançam).
 			if (events['messages.upsert']) {
 				void banHandler.handle(events['messages.upsert'] as Parameters<typeof banHandler.handle>[0])
+				void kickHandler.handle(events['messages.upsert'] as Parameters<typeof kickHandler.handle>[0])
 				void adminHandler.handle(events['messages.upsert'] as Parameters<typeof adminHandler.handle>[0])
 			}
 

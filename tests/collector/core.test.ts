@@ -421,3 +421,41 @@ test('group-participants.update invalida o diretório (próximo comando refaz o 
 
 	await handle.stop()
 })
+
+test('messages.upsert com /kick remove só do grupo (fiação core → kick-command)', async () => {
+	const fake = makeFakeSocket({
+		user: { id: '55@s.whatsapp.net', name: 'Bot' },
+		groups: {
+			'com@g.us': { id: 'com@g.us', isCommunity: true, participants: [{ id: 'chefe@lid', admin: 'superadmin' }] },
+			'g1@g.us': {
+				id: 'g1@g.us',
+				linkedParent: 'com@g.us',
+				participants: [{ id: 'chefe@lid', admin: null }, { id: 'alvo@lid', admin: null }],
+			},
+		},
+	})
+	const handle = startCollectorCore({
+		authDir: 'baileys_auth_info',
+		outboxPath: 'outbox.db',
+		logger: silentLogger,
+		baileysLogger: silentLogger,
+		webhook: null,
+		makeSocket: makeFakeMakeSocket(fake.sock),
+	})
+
+	await fake.emit({
+		'messages.upsert': {
+			type: 'notify',
+			messages: [{
+				key: { remoteJid: 'g1@g.us', participant: 'chefe@lid', id: 'CMD1' },
+				message: { extendedTextMessage: { text: '/kick', contextInfo: { participant: 'alvo@lid', stanzaId: 'S1' } } },
+			}],
+		},
+	})
+	await flush()
+
+	assert.deepEqual(fake.calls.removedGroup, [{ jid: 'g1@g.us', jids: ['alvo@lid'] }])
+	assert.deepEqual(fake.calls.removedCommunity, [])
+
+	await handle.stop()
+})
