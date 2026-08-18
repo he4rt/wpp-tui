@@ -17,6 +17,7 @@ import { createOutbox } from './outbox.js'
 import { createEventRouter } from './event-router.js'
 import { createBanHandler } from './ban-command.js'
 import { createKickHandler } from './kick-command.js'
+import { createUnbanHandler } from './unban-command.js'
 import { createAdminHandler } from './admin-command.js'
 import { createCommunityDirectory } from './community-directory.js'
 import { createDenylist } from './moderation-denylist.js'
@@ -215,6 +216,14 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 			directory,
 		})
 
+		// handler do comando /unban — só mexe na denylist; o retorno em si depende de link de convite.
+		const unbanHandler = createUnbanHandler({
+			sock: activeSock,
+			logger: deps.logger.child({ component: 'unban' }),
+			directory,
+			denylist,
+		})
+
 		// handler do comando /admin — usa o socket ativo; silencioso, erros vão pro log de auditoria.
 		const adminHandler = createAdminHandler({
 			sock: activeSock,
@@ -246,6 +255,7 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 			if (events['messages.upsert']) {
 				void banHandler.handle(events['messages.upsert'] as Parameters<typeof banHandler.handle>[0])
 				void kickHandler.handle(events['messages.upsert'] as Parameters<typeof kickHandler.handle>[0])
+				void unbanHandler.handle(events['messages.upsert'] as Parameters<typeof unbanHandler.handle>[0])
 				void adminHandler.handle(events['messages.upsert'] as Parameters<typeof adminHandler.handle>[0])
 			}
 
