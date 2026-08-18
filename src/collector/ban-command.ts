@@ -9,6 +9,7 @@
 import { messageText, parseCommand, type CmdMessage } from './command-core.js'
 import type { CommandLogger } from './command-handler.js'
 import type { CommunityDirectory } from './community-directory.js'
+import type { ModerationDenylist } from './moderation-denylist.js'
 import { createRemovalHandler, type RemovalSocket, type RemovalUpdateResult } from './removal-command.js'
 
 // Compat: os tipos do /ban são os do domínio de remoção.
@@ -22,5 +23,10 @@ export function parseBanCommand(text: string): boolean {
 	return parseCommand(text)?.name === 'ban'
 }
 
-export const createBanHandler = (deps: { sock: BanSocket; logger: CommandLogger; directory?: CommunityDirectory }) =>
-	createRemovalHandler({ name: 'ban', reach: 'community', ...deps })
+export const createBanHandler = (deps: {
+	sock: BanSocket
+	logger: CommandLogger
+	directory?: CommunityDirectory
+	denylist?: ModerationDenylist // sem ela o /ban vira remoção simples: a reentrada não é barrada
+	now?: () => Date
+}) => createRemovalHandler({ name: 'ban', reach: 'community', ...deps })

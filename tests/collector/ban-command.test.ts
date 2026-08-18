@@ -2,8 +2,14 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { parseBanCommand, messageText, createBanHandler } from '../../src/collector/ban-command.js'
 import type { BanMessage, BanSocket, BanUpdateResult } from '../../src/collector/ban-command.js'
+import fs from 'node:fs'
+import os from 'node:os'
+import path from 'node:path'
 import { createCommunityDirectory } from '../../src/collector/community-directory.js'
 import type { DirGroupMetadata } from '../../src/collector/community-directory.js'
+import { createDenylist } from '../../src/collector/moderation-denylist.js'
+
+const tmpDenylist = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ban-')), 'denylist.json')
 
 test('parseBanCommand: aceita /ban como primeiro token (com reply ou menção)', () => {
 	for (const t of ['/ban', ' /ban ', '/BAN', '/ban @Fulano', '/BAN @x', '/ban 5500900000002']) {
@@ -89,7 +95,7 @@ interface Call {
 	jids: string[]
 }
 
-function harness(opts: { status?: string; snap?: Record<string, DirGroupMetadata>; throwOnRemove?: boolean } = {}) {
+function harness(opts: { status?: string; snap?: Record<string, DirGroupMetadata>; throwOnRemove?: boolean; denylist?: boolean } = {}) {
 	const calls: Call[] = []
 	const logs: Record<string, unknown>[] = []
 	const snap = opts.snap ?? snapshot()
@@ -115,13 +121,16 @@ function harness(opts: { status?: string; snap?: Record<string, DirGroupMetadata
 		},
 	}
 
+	const denylist = opts.denylist ? createDenylist({ path: tmpDenylist() }) : undefined
 	const handler = createBanHandler({
 		sock,
 		logger: { info: (obj) => logs.push(obj) },
 		directory: createCommunityDirectory({ sock, now: () => 1000 }),
+		denylist,
+		now: () => new Date('2026-08-18T13:17:59.895Z'),
 	})
 
-	return { handler, calls, logs, last: () => logs[logs.length - 1] }
+	return { handler, calls, logs, denylist, last: () => logs[logs.length - 1] }
 }
 
 const upsert = (text: string, opts: { from?: string; group?: string; reply?: string; mention?: string } = {}) => ({
@@ -234,7 +243,7 @@ test('/ban de quem não está em nenhum grupo do escopo audita target_not_member
 	assert.equal(h.last().result, 'target_not_member')
 })
 
-test('/ban de telefone fora da comunidade audita target_not_found', async () => {
+test('/ban de telefone fora da comunidade sem denylist audita target_not_found', async () => {
 	const h = harness()
 	await h.handler.handle(upsert('/ban 5500900000009'))
 	assert.deepEqual(h.calls, [])
@@ -311,4 +320,48 @@ test('handle nunca lança mesmo com socket quebrado', async () => {
 	const handler = createBanHandler({ sock, logger: { info: (o) => logs.push(o) } })
 	await handler.handle(upsert(`/ban ${VITIMA_PHONE}`))
 	assert.equal(logs[logs.length - 1].result, 'directory_error')
+})
+
+// ---- denylist ----
+
+test('/ban grava na denylist com motivo, autor e comunidade', async () => {
+	const h = harness({ denylist: true })
+	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE} spam de cripto`))
+
+	assert.equal(h.last().result, 'removed')
+	assert.equal(h.last().denylisted, true)
+	assert.deepEqual(h.denylist!.list(), [{
+		lid: VITIMA,
+		phone: VITIMA_PHONE,
+		reason: 'spam de cripto',
+		by: ADMIN_COM,
+		at: '2026-08-18T13:17:59.895Z',
+		community: COMMUNITY,
+	}])
+})
+
+test('/ban de telefone fora da comunidade vira pré-ban na denylist', async () => {
+	const h = harness({ denylist: true })
+	await h.handler.handle(upsert('/ban 5500900000009 golpe'))
+
+	assert.deepEqual(h.calls, [], 'não há de onde remover ainda')
+	assert.equal(h.last().result, 'pre_banned')
+	const entry = h.denylist!.match({ phone: '5500900000009' })!
+	assert.equal(entry.lid, null)
+	assert.equal(entry.reason, 'golpe')
+})
+
+test('/ban recusado pelo WhatsApp ainda deixa o registro na denylist', async () => {
+	const h = harness({ denylist: true, status: '403' })
+	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE}`))
+
+	assert.equal(h.last().result, 'remove_rejected')
+	assert.equal(h.denylist!.match({ lid: VITIMA })?.by, ADMIN_COM, 'a decisão de banir não pode sumir num 403')
+})
+
+test('/ban bloqueado por guardrail NÃO entra na denylist', async () => {
+	const h = harness({ denylist: true })
+	await h.handler.handle(upsert('/ban', { reply: ADMIN_COM }))
+	assert.equal(h.last().result, 'self_ban')
+	assert.deepEqual(h.denylist!.list(), [])
 })
