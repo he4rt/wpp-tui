@@ -39,10 +39,13 @@ export function messageText(msg: CmdMessage): string {
 	return typeof ext === 'string' ? ext : ''
 }
 
-// Comando parseado: nome (sem prefixo, lowercase) + argumentos (lowercase).
+// Comando parseado: nome (sem prefixo, lowercase) + argumentos.
+// `args` vem em lowercase (comparação de flags, ex.: /admin on|off); `rawArgs` preserva o texto
+// como foi digitado — o motivo do ban ("Spam De Cripto") não pode ser achatado pela normalização.
 export interface ParsedCommand {
 	name: string
 	args: string[]
+	rawArgs: string[]
 }
 
 // Detecta o comando pelo PRIMEIRO token, com prefixo "/" OU "!" (case-insensitive).
@@ -51,7 +54,8 @@ export function parseCommand(text: string): ParsedCommand | null {
 	const tokens = text.trim().split(/\s+/).filter(Boolean)
 	const m = /^[/!](\w+)$/.exec(tokens[0] ?? '')
 	if (!m) return null
-	return { name: m[1].toLowerCase(), args: tokens.slice(1).map((t) => t.toLowerCase()) }
+	const rawArgs = tokens.slice(1)
+	return { name: m[1].toLowerCase(), args: rawArgs.map((t) => t.toLowerCase()), rawArgs }
 }
 
 export function isAdmin(p?: { admin?: 'admin' | 'superadmin' | null } | null): boolean {
