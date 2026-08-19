@@ -19,6 +19,8 @@ import { createBanHandler } from './ban-command.js'
 import { createKickHandler } from './kick-command.js'
 import { createAdminHandler } from './admin-command.js'
 import { createCommunityDirectory } from './community-directory.js'
+import { createDenylist } from './moderation-denylist.js'
+import { createDenylistEnforcer } from './denylist-enforcer.js'
 import { startWebhookSender } from './webhook-sender.js'
 import { startHeartbeat } from './heartbeat.js'
 import type { ConnectionStatus, GroupInfo } from '../types.js'
@@ -189,11 +191,21 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 		// precisam enxergar além do grupo onde foram digitados (quem está onde, quem é admin do topo).
 		const directory = createCommunityDirectory({ sock: activeSock })
 
+		// denylist: o /ban grava, o enforcer cobra. Persistida em disco, sobrevive a restart.
+		const denylist = createDenylist()
+		const enforcer = createDenylistEnforcer({
+			sock: activeSock,
+			logger: deps.logger.child({ component: 'denylist' }),
+			denylist,
+			directory,
+		})
+
 		// handler do comando /ban — usa o socket ativo; silencioso, erros vão pro log de auditoria.
 		const banHandler = createBanHandler({
 			sock: activeSock,
 			logger: deps.logger.child({ component: 'ban' }),
 			directory,
+			denylist,
 		})
 
 		// handler do comando /kick — mesma regra do /ban, alcance limitado ao grupo onde foi digitado.
@@ -223,6 +235,11 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 			// de decidir sobre uma lista de participantes vencida (o refetch é lazy — só na consulta).
 			if (events['group-participants.update'] || events['groups.update']) {
 				directory.invalidate()
+			}
+
+			// reentrada de quem está na denylist: remove de novo. Best-effort, nunca bloqueia a coleta.
+			if (events['group-participants.update']) {
+				void enforcer.handle(events['group-participants.update'] as Parameters<typeof enforcer.handle>[0])
 			}
 
 			// comandos de moderação: best-effort, não bloqueiam nem derrubam a coleta (handlers nunca lançam).

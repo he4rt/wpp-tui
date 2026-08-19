@@ -459,3 +459,51 @@ test('messages.upsert com /kick remove só do grupo (fiação core → kick-comm
 
 	await handle.stop()
 })
+
+test('group-participants.update add de quem foi banido dispara a remoção (fiação core → enforcer)', async () => {
+	const fake = makeFakeSocket({
+		user: { id: '55@s.whatsapp.net', name: 'Bot' },
+		groups: {
+			'com@g.us': { id: 'com@g.us', isCommunity: true, participants: [{ id: 'chefe@lid', admin: 'superadmin' }] },
+			'g1@g.us': {
+				id: 'g1@g.us',
+				linkedParent: 'com@g.us',
+				participants: [{ id: 'chefe@lid', admin: null }, { id: 'alvo@lid', admin: null }],
+			},
+		},
+	})
+	const handle = startCollectorCore({
+		authDir: 'baileys_auth_info',
+		outboxPath: 'outbox.db',
+		logger: silentLogger,
+		baileysLogger: silentLogger,
+		webhook: null,
+		makeSocket: makeFakeMakeSocket(fake.sock),
+	})
+
+	// 1) o admin bane
+	await fake.emit({
+		'messages.upsert': {
+			type: 'notify',
+			messages: [{
+				key: { remoteJid: 'g1@g.us', participant: 'chefe@lid', id: 'CMD1' },
+				message: { extendedTextMessage: { text: '/ban', contextInfo: { participant: 'alvo@lid', stanzaId: 'S1' } } },
+			}],
+		},
+	})
+	await flush()
+	assert.equal(fake.calls.removedCommunity.length, 1)
+
+	// 2) o banido volta pelo link — o enforcer tira de novo
+	await fake.emit({
+		'group-participants.update': { id: 'g1@g.us', action: 'add', participants: [{ id: 'alvo@lid' }] },
+	})
+	await flush()
+
+	assert.deepEqual(fake.calls.removedCommunity, [
+		{ jid: 'com@g.us', jids: ['alvo@lid'] },
+		{ jid: 'com@g.us', jids: ['alvo@lid'] },
+	])
+
+	await handle.stop()
+})

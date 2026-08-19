@@ -40,6 +40,10 @@ _Avoid_: escopo global (nada atravessa comunidades diferentes).
 Snapshot em memória de quem está em quais grupos, quem são os admins do topo e qual telefone corresponde a qual `@lid`. É o que permite ao **Comando de moderação** alcançar alguém que não está no grupo onde o comando foi digitado. Vem de uma chamada `groupFetchAllParticipating`, cacheada por TTL e invalidada por entrada/saída de membro.
 _Avoid_: cache de grupos (`group-metadata.json` é outro artefato, de UI/coleta).
 
+**Denylist de moderação**:
+Registro persistente de quem foi banido (`logs/denylist.json`), indexado por `@lid` **e** por telefone. É o que separa **ban** de simples remoção: remover não impede voltar pelo link de convite, então toda entrada em grupo é conferida contra a lista e a reentrada é desfeita. Aceita **pré-ban** — um número que ainda não entrou, banido preventivamente.
+_Avoid_: blocklist (o `updateBlockStatus` do WhatsApp é outra coisa, e não impede entrar em grupo).
+
 **Evento de grupo**:
 Evento do WhatsApp originado de um JID `@g.us` — a única coisa que o **Coletor** entrega. DMs e dados de sessão nunca saem do processo.
 
