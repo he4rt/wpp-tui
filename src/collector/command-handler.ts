@@ -4,7 +4,8 @@
 // audit (createCommandHandler), mais o par metadata + autorização de admin (requireGroupAdmin).
 
 import { jidNormalizedUser } from '@whiskeysockets/baileys'
-import { messageText, parseCommand, isAdmin, type CmdMessage, type CmdParticipant, type CmdUpsert } from './command-core.js'
+import { messageText, parseCommand, isAdmin, type CmdMessage, type CmdParticipant, type CmdUpsert, type ParsedCommand } from './command-core.js'
+import type { CommunityDirectory, CommunityView } from './community-directory.js'
 
 export interface CommandLogger {
 	info(obj: Record<string, unknown>, msg?: string): void
@@ -18,6 +19,7 @@ export type Audit = (result: string, extra?: Record<string, unknown>) => void
 // seu próprio shape de sock (BanSocket / AdminSocket) já tipado dentro do ctx.
 export interface CommandContext<S> {
 	msg: CmdMessage
+	cmd: ParsedCommand // já parseado pela casca — o domínio não re-parseia
 	groupJid: string
 	actor: string
 	sock: S
@@ -40,11 +42,12 @@ export function createCommandHandler<S>(deps: {
 				try {
 					const groupJid = msg.key?.remoteJid
 					if (!groupJid || !groupJid.endsWith('@g.us')) continue // só grupos
-					if (parseCommand(messageText(msg))?.name !== name) continue // é o meu comando? (/ e !)
+					const cmd = parseCommand(messageText(msg))
+					if (cmd?.name !== name) continue // é o meu comando? (/ e !)
 					const actor = msg.key?.participant ? jidNormalizedUser(msg.key.participant) : ''
 					const audit: Audit = (result, extra = {}) =>
 						logger.info({ actor, group: groupJid, result, ...extra }, `${name}: tentativa`)
-					await domain({ msg, groupJid, actor, sock, audit })
+					await domain({ msg, cmd, groupJid, actor, sock, audit })
 				} catch (err) {
 					logger.info({ result: 'handler_error', err: String(err) }, `${name}: erro inesperado`)
 				}
@@ -77,4 +80,35 @@ export async function requireGroupAdmin<M extends { participants: CmdParticipant
 		return null
 	}
 	return meta
+}
+
+// Autorização dos comandos que agem sobre a comunidade (/ban e derivados).
+// Substitui o requireGroupAdmin para esses casos: o poder vem do TOPO — admin/superadmin no JID da
+// comunidade pai —, não do grupo onde o comando foi digitado. Grupos sem comunidade degradam para
+// admin do próprio grupo, que é o único topo que existe ali.
+// Devolve a view do escopo (grupos alcançados + índices de busca do alvo) se autorizado.
+export async function requireCommunityAdmin(deps: {
+	directory: CommunityDirectory
+	groupJid: string
+	actor: string
+	audit: Audit
+}): Promise<CommunityView | null> {
+	const { directory, groupJid, actor, audit } = deps
+
+	let view: CommunityView | null
+	try {
+		view = await directory.viewFor(groupJid)
+	} catch (err) {
+		audit('directory_error', { err: String(err) })
+		return null
+	}
+	if (!view) {
+		audit('group_unknown')
+		return null
+	}
+	if (!view.admins.has(actor)) {
+		audit('not_authorized', { scope: view.scope })
+		return null
+	}
+	return view
 }

@@ -18,7 +18,7 @@ import makeWASocketReal, {
 // Tudo é injetável (socket/auth/relógio/timer/streams) para ser testável sem rede — ver
 // tests/pairing.test.ts.
 
-// Valida o número: apenas dígitos com DDI (ex.: 5511999999999). Rejeita `+`, `()`, `-`, espaços e
+// Valida o número: apenas dígitos com DDI (ex.: 5500900000002). Rejeita `+`, `()`, `-`, espaços e
 // qualquer coisa não numérica. Retorna o número normalizado (trim) ou null se inválido/ausente.
 export function validatePairingNumber(raw: string | undefined): string | null {
 	if (!raw) return null
@@ -89,7 +89,7 @@ export async function runPairing(deps: PairingDeps): Promise<number> {
 	const validNumber = validatePairingNumber(deps.number)
 	if (!validNumber) {
 		log.error(
-			'pairing: número inválido ou ausente. Passe apenas dígitos com DDI — ex.: 5511999999999 — via `pnpm pair <numero>` ou a env PAIR_NUMBER.',
+			'pairing: número inválido ou ausente. Passe apenas dígitos com DDI — ex.: 5500900000002 — via `pnpm pair <numero>` ou a env PAIR_NUMBER.',
 		)
 		return 1
 	}

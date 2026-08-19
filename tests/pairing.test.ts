@@ -64,7 +64,7 @@ const fetchVersion = (async () => ({ version: [2, 3000, 0] })) as unknown as Pai
 function baseDeps(over: Partial<PairingDeps> & { sock?: any } = {}): PairingDeps {
 	const auth = fakeAuthState(false)
 	return {
-		number: '5511999999999',
+		number: '5500900000002',
 		force: false,
 		authDir: '/tmp/does-not-matter',
 		logger: silentLogger,
@@ -79,8 +79,8 @@ function baseDeps(over: Partial<PairingDeps> & { sock?: any } = {}): PairingDeps
 }
 
 test('validatePairingNumber: aceita dígitos com DDI, rejeita não-dígitos e ausência', () => {
-	assert.equal(validatePairingNumber('5511999999999'), '5511999999999')
-	assert.equal(validatePairingNumber(' 5511999999999 '), '5511999999999')
+	assert.equal(validatePairingNumber('5500900000002'), '5500900000002')
+	assert.equal(validatePairingNumber(' 5500900000002 '), '5500900000002')
 	assert.equal(validatePairingNumber('+55 (11) 99999-9999'), null)
 	assert.equal(validatePairingNumber('55-11-99999'), null)
 	assert.equal(validatePairingNumber('abc'), null)
@@ -149,7 +149,7 @@ test('happy path: imprime o código no stdout, grava a sessão no open e sai 0',
 	const exit = await codeP
 	assert.equal(exit, 0)
 	assert.equal(printed, 'WXYZ7890')
-	assert.deepEqual(fake.calls.requested, ['5511999999999'])
+	assert.deepEqual(fake.calls.requested, ['5500900000002'])
 	assert.ok(auth.saveCredsCalls() >= 1, 'saveCreds deveria ter sido chamado no open')
 	assert.equal(fake.calls.end, 1)
 })
@@ -252,7 +252,7 @@ test('sessão já registrada com --force: descarta o authDir e prossegue com o p
 	assert.equal(exit, 0)
 	assert.ok(removed, 'authDir deveria ter sido descartado com --force')
 	assert.equal(printed, 'FORCE123')
-	assert.deepEqual(fake.calls.requested, ['5511999999999'])
+	assert.deepEqual(fake.calls.requested, ['5500900000002'])
 })
 
 test('--force com dir sujo mas NÃO registrado: descarta o authDir mesmo assim', async () => {
@@ -276,7 +276,7 @@ test('--force com dir sujo mas NÃO registrado: descarta o authDir mesmo assim',
 	const exit = await codeP
 	assert.equal(exit, 0)
 	assert.ok(removed, 'authDir deveria ser descartado com --force mesmo sem sessão registrada')
-	assert.deepEqual(fake.calls.requested, ['5511999999999'])
+	assert.deepEqual(fake.calls.requested, ['5500900000002'])
 })
 
 test('requestPairingCode falha: sai != 0 e encerra o socket', async () => {
@@ -305,7 +305,7 @@ test('close com restartRequired (515) pós-code: reconecta e sai 0 no open segui
 	const exit = await codeP
 	assert.equal(exit, 0)
 	// o code foi solicitado UMA vez só (não re-solicitado no restart).
-	assert.deepEqual(fake.calls.requested, ['5511999999999'])
+	assert.deepEqual(fake.calls.requested, ['5500900000002'])
 })
 
 test('connection close antes do open: sai != 0', async () => {

@@ -1,10 +1,12 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseBanCommand, messageText, resolveBanTarget, createBanHandler } from '../../src/collector/ban-command.js'
-import type { BanMessage, BanGroupMetadata, BanSocket, BanUpdateResult } from '../../src/collector/ban-command.js'
+import { parseBanCommand, messageText, createBanHandler } from '../../src/collector/ban-command.js'
+import type { BanMessage, BanSocket, BanUpdateResult } from '../../src/collector/ban-command.js'
+import { createCommunityDirectory } from '../../src/collector/community-directory.js'
+import type { DirGroupMetadata } from '../../src/collector/community-directory.js'
 
 test('parseBanCommand: aceita /ban como primeiro token (com reply ou menção)', () => {
-	for (const t of ['/ban', ' /ban ', '/BAN', '/ban @Fulano', '/BAN @x']) {
+	for (const t of ['/ban', ' /ban ', '/BAN', '/ban @Fulano', '/BAN @x', '/ban 5500900000002']) {
 		assert.equal(parseBanCommand(t), true, `deveria aceitar: "${t}"`)
 	}
 })
@@ -22,232 +24,291 @@ test('parseBanCommand: aceita ! como prefixo', () => {
 	assert.equal(parseBanCommand('!bandido'), false)
 })
 
-test('messageText: lê conversation', () => {
-	const msg: BanMessage = { message: { conversation: '/ban' } }
-	assert.equal(messageText(msg), '/ban')
-})
-
-test('messageText: lê extendedTextMessage.text', () => {
-	const msg: BanMessage = { message: { extendedTextMessage: { text: '/ban @x' } } }
-	assert.equal(messageText(msg), '/ban @x')
-})
-
-test('messageText: sem texto → string vazia', () => {
+test('messageText: lê conversation e extendedTextMessage.text', () => {
+	assert.equal(messageText({ message: { conversation: '/ban' } }), '/ban')
+	assert.equal(messageText({ message: { extendedTextMessage: { text: '/ban @x' } } }), '/ban @x')
 	assert.equal(messageText({}), '')
-	assert.equal(messageText({ message: {} }), '')
 })
 
-test('resolveBanTarget: reply usa contextInfo.participant', () => {
-	const msg: BanMessage = {
-		message: { extendedTextMessage: { text: '/ban', contextInfo: { participant: 'victim@s.whatsapp.net', stanzaId: 'S1' } } },
+// ---- cenário: topologia de exemplo ----
+
+const COMMUNITY = '120363000000000001@g.us'
+const GENERAL = '120363000000000002@g.us'
+const MARKETING = '120363000000000003@g.us'
+const SOLTO = '120363000000000009@g.us'
+
+const ADMIN_COM = '100000000000001@lid' // admin da comunidade — quem comanda
+const ADMIN_SUB = '100000000000003@lid' // admin só do Grupo Geral — NÃO comanda
+const OWNER = '100000000000002@lid'
+const VITIMA = '100000000000004@lid' // está só no Grupo Secundário
+const VITIMA_PHONE = '5500900000001'
+
+function snapshot(): Record<string, DirGroupMetadata> {
+	return {
+		[COMMUNITY]: {
+			id: COMMUNITY,
+			subject: 'Comunidade Exemplo',
+			owner: OWNER,
+			isCommunity: true,
+			participants: [
+				{ id: ADMIN_COM, admin: 'superadmin' },
+				{ id: OWNER, admin: 'admin' },
+			],
+		},
+		[GENERAL]: {
+			id: GENERAL,
+			subject: 'Grupo Geral',
+			linkedParent: COMMUNITY,
+			participants: [
+				{ id: ADMIN_SUB, admin: 'admin' },
+				{ id: ADMIN_COM, admin: null },
+				{ id: OWNER, admin: null },
+			],
+		},
+		[MARKETING]: {
+			id: MARKETING,
+			subject: 'Grupo Secundário',
+			linkedParent: COMMUNITY,
+			participants: [{ id: VITIMA, phoneNumber: `${VITIMA_PHONE}@s.whatsapp.net`, admin: null }],
+		},
+		[SOLTO]: {
+			id: SOLTO,
+			subject: 'Grupo Solto',
+			owner: ADMIN_SUB,
+			participants: [
+				{ id: ADMIN_SUB, admin: 'admin' },
+				{ id: VITIMA, phoneNumber: `${VITIMA_PHONE}@s.whatsapp.net`, admin: null },
+			],
+		},
 	}
-	assert.equal(resolveBanTarget(msg), 'victim@s.whatsapp.net')
-})
-
-test('resolveBanTarget: menção usa o primeiro mentionedJid', () => {
-	const msg: BanMessage = {
-		message: { extendedTextMessage: { text: '/ban @x', contextInfo: { mentionedJid: ['victim@s.whatsapp.net'] } } },
-	}
-	assert.equal(resolveBanTarget(msg), 'victim@s.whatsapp.net')
-})
-
-test('resolveBanTarget: reply tem prioridade sobre menção', () => {
-	const msg: BanMessage = {
-		message: { extendedTextMessage: { text: '/ban @y', contextInfo: { participant: 'reply@s.whatsapp.net', stanzaId: 'S1', mentionedJid: ['mention@s.whatsapp.net'] } } },
-	}
-	assert.equal(resolveBanTarget(msg), 'reply@s.whatsapp.net')
-})
-
-test('resolveBanTarget: sem reply e sem menção → null', () => {
-	assert.equal(resolveBanTarget({ message: { conversation: '/ban' } }), null)
-	assert.equal(resolveBanTarget({ message: { extendedTextMessage: { text: '/ban', contextInfo: {} } } }), null)
-	// participant sem stanzaId não conta como reply
-	assert.equal(resolveBanTarget({ message: { extendedTextMessage: { text: '/ban', contextInfo: { participant: 'x@s.whatsapp.net' } } } }), null)
-})
-
-// ---- helpers do handler ----
-const ADMIN = 'admin@s.whatsapp.net'
-const VICTIM = 'victim@s.whatsapp.net'
-const OWNER = 'owner@s.whatsapp.net'
-const GROUP = 'g@g.us'
-const COMMUNITY = 'community@g.us'
-
-function fakeLogger() {
-	const logs: Array<Record<string, unknown>> = []
-	return { logs, logger: { info: (o: Record<string, unknown>) => { logs.push(o) } } }
 }
 
-// sock fake: captura chamadas de remoção e serve metadata do grupo (e opcionalmente do pai).
-function fakeSock(meta: Partial<BanGroupMetadata>, opts: { parent?: BanGroupMetadata; result?: BanUpdateResult[]; throwMeta?: boolean; throwRemove?: boolean } = {}) {
-	const calls = { group: [] as Array<{ jid: string; jids: string[] }>, community: [] as Array<{ jid: string; jids: string[] }> }
+interface Call {
+	kind: 'community' | 'group'
+	jid: string
+	jids: string[]
+}
+
+function harness(opts: { status?: string; snap?: Record<string, DirGroupMetadata>; throwOnRemove?: boolean } = {}) {
+	const calls: Call[] = []
+	const logs: Record<string, unknown>[] = []
+	const snap = opts.snap ?? snapshot()
+
+	const result = (jids: string[]): BanUpdateResult[] => [{ status: opts.status ?? '200', jid: jids[0] }]
+
 	const sock: BanSocket = {
-		async groupMetadata(jid: string): Promise<BanGroupMetadata> {
-			if (opts.throwMeta) throw new Error('meta boom')
-			if (opts.parent && jid === opts.parent.id) return opts.parent
-			return { id: jid, owner: meta.owner ?? null, linkedParent: meta.linkedParent ?? null, participants: meta.participants ?? [] }
+		async groupFetchAllParticipating() {
+			return snap
+		},
+		async groupMetadata(jid) {
+			return snap[jid]
 		},
 		async groupParticipantsUpdate(jid, jids) {
-			if (opts.throwRemove) throw new Error('remove boom')
-			calls.group.push({ jid, jids }); return opts.result ?? [{ status: '200', jid: jids[0] }]
+			if (opts.throwOnRemove) throw new Error('boom')
+			calls.push({ kind: 'group', jid, jids })
+			return result(jids)
 		},
 		async communityParticipantsUpdate(jid, jids) {
-			if (opts.throwRemove) throw new Error('remove boom')
-			calls.community.push({ jid, jids }); return opts.result ?? [{ status: '200', jid: jids[0] }]
+			if (opts.throwOnRemove) throw new Error('boom')
+			calls.push({ kind: 'community', jid, jids })
+			return result(jids)
 		},
 	}
-	return { sock, calls }
+
+	const handler = createBanHandler({
+		sock,
+		logger: { info: (obj) => logs.push(obj) },
+		directory: createCommunityDirectory({ sock, now: () => 1000 }),
+	})
+
+	return { handler, calls, logs, last: () => logs[logs.length - 1] }
 }
 
-// monta um messages.upsert com um único comando /ban (reply por padrão).
-function banUpsert(opts: { group?: string; actor?: string; text?: string; reply?: string; mention?: string } = {}) {
-	const ctx: Record<string, unknown> = {}
-	if (opts.reply) { ctx.participant = opts.reply; ctx.stanzaId = 'S1' }
-	if (opts.mention) ctx.mentionedJid = [opts.mention]
-	const msg: BanMessage = {
-		key: { remoteJid: opts.group ?? GROUP, participant: opts.actor ?? ADMIN, id: 'CMD1' },
-		message: { extendedTextMessage: { text: opts.text ?? '/ban', contextInfo: Object.keys(ctx).length ? ctx : undefined } },
+const upsert = (text: string, opts: { from?: string; group?: string; reply?: string; mention?: string } = {}) => ({
+	type: 'notify',
+	messages: [
+		{
+			key: { remoteJid: opts.group ?? GENERAL, participant: opts.from ?? ADMIN_COM, id: 'M1' },
+			message: opts.reply
+				? { extendedTextMessage: { text, contextInfo: { participant: opts.reply, stanzaId: 'S1' } } }
+				: opts.mention
+					? { extendedTextMessage: { text, contextInfo: { mentionedJid: [opts.mention] } } }
+					: { conversation: text },
+		} as BanMessage,
+	],
+})
+
+// ---- o caso que falhou em produção ----
+
+test('/ban por telefone remove alguém que está só em OUTRO subgrupo', async () => {
+	const h = harness()
+	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE} spam de cripto`))
+
+	assert.deepEqual(h.calls, [{ kind: 'community', jid: COMMUNITY, jids: [VITIMA] }])
+	assert.equal(h.last().result, 'removed')
+	assert.equal(h.last().target, VITIMA)
+	assert.equal(h.last().via, 'phone')
+	assert.equal(h.last().scope, 'community')
+	assert.equal(h.last().reason, 'spam de cripto')
+	assert.deepEqual(h.last().removedFrom, [MARKETING])
+})
+
+test('/ban sem alvo nenhum ainda audita no_target (regressão do log de 18/08)', async () => {
+	const h = harness()
+	await h.handler.handle(upsert('/ban'))
+	assert.deepEqual(h.calls, [])
+	assert.equal(h.last().result, 'no_target')
+	assert.equal(h.last().target, null)
+})
+
+test('/ban por reply e por menção continuam funcionando', async () => {
+	for (const opts of [{ reply: VITIMA }, { mention: VITIMA }]) {
+		const h = harness()
+		await h.handler.handle(upsert('/ban', opts))
+		assert.deepEqual(h.calls, [{ kind: 'community', jid: COMMUNITY, jids: [VITIMA] }])
+		assert.equal(h.last().result, 'removed')
 	}
-	return { type: 'notify', messages: [msg] }
-}
-
-const ADMIN_VICTIM = [{ id: ADMIN, admin: 'admin' as const }, { id: VICTIM, admin: null }]
-
-test('handler: ignora mensagem que não é /ban', async () => {
-	const { sock, calls } = fakeSock({ participants: ADMIN_VICTIM })
-	const { logger } = fakeLogger()
-	const h = createBanHandler({ sock, logger })
-	await h.handle(banUpsert({ text: 'oi pessoal', reply: VICTIM }))
-	assert.equal(calls.group.length + calls.community.length, 0)
 })
 
-test('handler: ignora DM (não-grupo)', async () => {
-	const { sock, calls } = fakeSock({ participants: ADMIN_VICTIM })
-	const { logger } = fakeLogger()
-	const h = createBanHandler({ sock, logger })
-	await h.handle(banUpsert({ group: '5511@s.whatsapp.net', reply: VICTIM }))
-	assert.equal(calls.group.length + calls.community.length, 0)
+// ---- autorização ----
+
+test('/ban de admin de SUBGRUPO é recusado — a autoridade é da comunidade', async () => {
+	const h = harness()
+	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE}`, { from: ADMIN_SUB }))
+	assert.deepEqual(h.calls, [])
+	assert.equal(h.last().result, 'not_authorized')
+	assert.equal(h.last().scope, 'community')
 })
 
-test('handler: ignora upsert que não é notify', async () => {
-	const { sock, calls } = fakeSock({ participants: ADMIN_VICTIM })
-	const { logger } = fakeLogger()
-	const h = createBanHandler({ sock, logger })
-	const u = banUpsert({ reply: VICTIM }); u.type = 'append'
-	await h.handle(u)
-	assert.equal(calls.group.length + calls.community.length, 0)
+test('/ban de membro comum é recusado', async () => {
+	const h = harness()
+	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE}`, { from: VITIMA, group: MARKETING }))
+	assert.deepEqual(h.calls, [])
+	assert.equal(h.last().result, 'not_authorized')
 })
 
-test('handler: /ban sem reply e sem menção → no_target', async () => {
-	const { sock, calls } = fakeSock({ participants: ADMIN_VICTIM })
-	const { logs, logger } = fakeLogger()
-	const h = createBanHandler({ sock, logger })
-	await h.handle(banUpsert({})) // /ban puro
-	assert.equal(calls.group.length + calls.community.length, 0)
-	assert.equal(logs.at(-1)?.result, 'no_target')
+test('/ban em grupo desconhecido audita group_unknown', async () => {
+	const h = harness()
+	await h.handler.handle(upsert('/ban', { group: '000@g.us', reply: VITIMA }))
+	assert.deepEqual(h.calls, [])
+	assert.equal(h.last().result, 'group_unknown')
 })
 
-test('handler: autor não-admin → not_admin, sem remoção', async () => {
-	const { sock, calls } = fakeSock({ participants: [{ id: ADMIN, admin: null }, { id: VICTIM, admin: null }] })
-	const { logs, logger } = fakeLogger()
-	const h = createBanHandler({ sock, logger })
-	await h.handle(banUpsert({ reply: VICTIM }))
-	assert.equal(calls.group.length + calls.community.length, 0)
-	assert.equal(logs.at(-1)?.result, 'not_admin')
+// ---- guardrails ----
+
+test('/ban no próprio autor é ignorado', async () => {
+	const h = harness()
+	await h.handler.handle(upsert('/ban', { reply: ADMIN_COM }))
+	assert.deepEqual(h.calls, [])
+	assert.equal(h.last().result, 'self_ban')
 })
 
-test('handler: auto-ban → self_ban, sem remoção', async () => {
-	const { sock, calls } = fakeSock({ participants: ADMIN_VICTIM })
-	const { logs, logger } = fakeLogger()
-	const h = createBanHandler({ sock, logger })
-	await h.handle(banUpsert({ reply: ADMIN }))
-	assert.equal(calls.group.length + calls.community.length, 0)
-	assert.equal(logs.at(-1)?.result, 'self_ban')
+test('/ban em admin da comunidade é bloqueado', async () => {
+	const h = harness()
+	await h.handler.handle(upsert('/ban', { from: OWNER, reply: ADMIN_COM }))
+	assert.deepEqual(h.calls, [])
+	assert.equal(h.last().result, 'target_is_community_admin')
 })
 
-test('handler: alvo fora do grupo → target_not_member', async () => {
-	const { sock, calls } = fakeSock({ participants: ADMIN_VICTIM })
-	const { logs, logger } = fakeLogger()
-	const h = createBanHandler({ sock, logger })
-	await h.handle(banUpsert({ reply: 'stranger@s.whatsapp.net' }))
-	assert.equal(calls.group.length + calls.community.length, 0)
-	assert.equal(logs.at(-1)?.result, 'target_not_member')
+test('/ban em admin de subgrupo é PERMITIDO (comunidade manda em subgrupo)', async () => {
+	const h = harness()
+	await h.handler.handle(upsert('/ban', { reply: ADMIN_SUB }))
+	assert.deepEqual(h.calls, [{ kind: 'community', jid: COMMUNITY, jids: [ADMIN_SUB] }])
+	assert.equal(h.last().result, 'removed')
 })
 
-test('handler: alvo é admin → target_is_admin', async () => {
-	const { sock, calls } = fakeSock({ participants: [{ id: ADMIN, admin: 'admin' }, { id: VICTIM, admin: 'admin' }] })
-	const { logs, logger } = fakeLogger()
-	const h = createBanHandler({ sock, logger })
-	await h.handle(banUpsert({ reply: VICTIM }))
-	assert.equal(calls.group.length + calls.community.length, 0)
-	assert.equal(logs.at(-1)?.result, 'target_is_admin')
+test('/ban no owner da comunidade é bloqueado', async () => {
+	const snap = snapshot()
+	// tira o owner da lista de admins da comunidade p/ o guardrail de owner ser o que barra
+	snap[COMMUNITY].participants = [{ id: ADMIN_COM, admin: 'superadmin' }]
+	const h = harness({ snap })
+	await h.handler.handle(upsert('/ban', { reply: OWNER }))
+	assert.deepEqual(h.calls, [])
+	assert.equal(h.last().result, 'target_is_owner')
 })
 
-test('handler: alvo é owner do grupo → target_is_owner', async () => {
-	const { sock, calls } = fakeSock({ owner: VICTIM, participants: ADMIN_VICTIM })
-	const { logs, logger } = fakeLogger()
-	const h = createBanHandler({ sock, logger })
-	await h.handle(banUpsert({ reply: VICTIM }))
-	assert.equal(calls.group.length + calls.community.length, 0)
-	assert.equal(logs.at(-1)?.result, 'target_is_owner')
+test('/ban de quem não está em nenhum grupo do escopo audita target_not_member', async () => {
+	const h = harness()
+	await h.handler.handle(upsert('/ban', { reply: 'fantasma@lid' }))
+	assert.deepEqual(h.calls, [])
+	assert.equal(h.last().result, 'target_not_member')
 })
 
-test('handler: sucesso em grupo standalone → groupParticipantsUpdate', async () => {
-	const { sock, calls } = fakeSock({ participants: ADMIN_VICTIM }) // sem linkedParent
-	const { logs, logger } = fakeLogger()
-	const h = createBanHandler({ sock, logger })
-	await h.handle(banUpsert({ reply: VICTIM }))
-	assert.equal(calls.community.length, 0)
-	assert.deepEqual(calls.group, [{ jid: GROUP, jids: [VICTIM] }])
-	assert.equal(logs.at(-1)?.result, 'removed')
-	assert.equal(logs.at(-1)?.status, '200')
+test('/ban de telefone fora da comunidade audita target_not_found', async () => {
+	const h = harness()
+	await h.handler.handle(upsert('/ban 5500900000009'))
+	assert.deepEqual(h.calls, [])
+	assert.equal(h.last().result, 'target_not_found')
+	assert.equal(h.last().phone, '5500900000009')
 })
 
-test('handler: sucesso em comunidade → communityParticipantsUpdate no pai', async () => {
-	const { sock, calls } = fakeSock(
-		{ linkedParent: COMMUNITY, participants: ADMIN_VICTIM },
-		{ parent: { id: COMMUNITY, owner: OWNER, participants: [] } },
-	)
-	const { logs, logger } = fakeLogger()
-	const h = createBanHandler({ sock, logger })
-	await h.handle(banUpsert({ reply: VICTIM }))
-	assert.equal(calls.group.length, 0)
-	assert.deepEqual(calls.community, [{ jid: COMMUNITY, jids: [VICTIM] }])
-	assert.equal(logs.at(-1)?.result, 'removed')
-	assert.equal(logs.at(-1)?.community, COMMUNITY)
+// ---- veredito honesto ----
+
+test('status 403 audita remove_rejected, NÃO removed (bot sem admin na comunidade)', async () => {
+	const h = harness({ status: '403' })
+	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE}`))
+	assert.equal(h.calls.length, 1)
+	assert.equal(h.last().result, 'remove_rejected')
+	assert.equal(h.last().status, '403')
 })
 
-test('handler: protege o owner da COMUNIDADE → target_is_owner, sem remoção', async () => {
-	const { sock, calls } = fakeSock(
-		{ linkedParent: COMMUNITY, participants: [{ id: ADMIN, admin: 'admin' }, { id: VICTIM, admin: null }] },
-		{ parent: { id: COMMUNITY, owner: VICTIM, participants: [] } },
-	)
-	const { logs, logger } = fakeLogger()
-	const h = createBanHandler({ sock, logger })
-	await h.handle(banUpsert({ reply: VICTIM }))
-	assert.equal(calls.group.length + calls.community.length, 0)
-	assert.equal(logs.at(-1)?.result, 'target_is_owner')
+test('exceção na remoção vira remove_error sem derrubar o handler', async () => {
+	const h = harness({ throwOnRemove: true })
+	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE}`))
+	assert.equal(h.last().result, 'remove_error')
 })
 
-test('handler: menção também resolve e bane', async () => {
-	const { sock, calls } = fakeSock({ participants: ADMIN_VICTIM })
-	const { logger } = fakeLogger()
-	const h = createBanHandler({ sock, logger })
-	await h.handle(banUpsert({ text: '/ban @v', mention: VICTIM }))
-	assert.deepEqual(calls.group, [{ jid: GROUP, jids: [VICTIM] }])
+// ---- grupo standalone ----
+
+test('grupo sem comunidade: admin do próprio grupo comanda e o ban fica só nele', async () => {
+	const h = harness()
+	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE}`, { from: ADMIN_SUB, group: SOLTO }))
+	assert.deepEqual(h.calls, [{ kind: 'group', jid: SOLTO, jids: [VITIMA] }])
+	assert.equal(h.last().result, 'removed')
+	assert.equal(h.last().scope, 'group')
+	assert.equal(h.last().community, null)
 })
 
-test('handler: groupMetadata falha → metadata_error, sem lançar', async () => {
-	const { sock } = fakeSock({ participants: ADMIN_VICTIM }, { throwMeta: true })
-	const { logs, logger } = fakeLogger()
-	const h = createBanHandler({ sock, logger })
-	await h.handle(banUpsert({ reply: VICTIM })) // não deve lançar
-	assert.equal(logs.at(-1)?.result, 'metadata_error')
+// ---- não-comando / robustez ----
+
+test('mensagem que não é comando não dispara nada', async () => {
+	const h = harness()
+	await h.handler.handle(upsert('oi pessoal'))
+	assert.deepEqual(h.calls, [])
+	assert.deepEqual(h.logs, [])
 })
 
-test('handler: falha na remoção → remove_error, sem lançar', async () => {
-	const { sock } = fakeSock({ participants: ADMIN_VICTIM }, { throwRemove: true })
-	const { logs, logger } = fakeLogger()
-	const h = createBanHandler({ sock, logger })
-	await h.handle(banUpsert({ reply: VICTIM }))
-	assert.equal(logs.at(-1)?.result, 'remove_error')
+test('upsert que não é notify é ignorado', async () => {
+	const h = harness()
+	await h.handler.handle({ ...upsert(`/ban ${VITIMA_PHONE}`), type: 'append' })
+	assert.deepEqual(h.calls, [])
+	assert.deepEqual(h.logs, [])
+})
+
+test('DM não dispara o comando', async () => {
+	const h = harness()
+	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE}`, { group: '5511999@s.whatsapp.net' }))
+	assert.deepEqual(h.calls, [])
+	assert.deepEqual(h.logs, [])
+})
+
+test('handle nunca lança mesmo com socket quebrado', async () => {
+	const sock = {
+		async groupFetchAllParticipating(): Promise<Record<string, DirGroupMetadata>> {
+			throw new Error('offline')
+		},
+		async groupMetadata(): Promise<DirGroupMetadata> {
+			throw new Error('offline')
+		},
+		async groupParticipantsUpdate() {
+			return []
+		},
+		async communityParticipantsUpdate() {
+			return []
+		},
+	} satisfies BanSocket
+	const logs: Record<string, unknown>[] = []
+	const handler = createBanHandler({ sock, logger: { info: (o) => logs.push(o) } })
+	await handler.handle(upsert(`/ban ${VITIMA_PHONE}`))
+	assert.equal(logs[logs.length - 1].result, 'directory_error')
 })
