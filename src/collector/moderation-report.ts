@@ -135,25 +135,44 @@ export interface ModerationReporter {
 	publish(entry: ReportEntry): Promise<void>
 }
 
-// Publica no grupo de log. Sem LOG_GROUP_JID configurado vira no-op — o journal segue completo.
+// Canal para o grupo de log: quem tem texto pronto manda por aqui. Sem LOG_GROUP_JID configurado
+// vira no-op — o journal segue completo. Compartilhado por tudo que reporta moderação (relatório de
+// comando, registro de apagamento), para que a regra do no-op e o engolir de erro existam uma vez.
+export interface LogGroupPublisher {
+	send(text: string): Promise<void>
+}
+
+export function createLogGroupPublisher(deps: {
+	sock: ReportSocket
+	logGroupJid: string | null
+	onError?: (err: unknown) => void
+}): LogGroupPublisher {
+	return {
+		async send(text) {
+			if (!deps.logGroupJid) return
+			try {
+				await deps.sock.sendMessage(deps.logGroupJid, { text })
+			} catch (err) {
+				// falha ao publicar não pode derrubar o comando nem a coleta: o journal já registrou.
+				deps.onError?.(err)
+			}
+		},
+	}
+}
+
+// Publica o relatório de um comando no grupo de log.
 export function createModerationReporter(deps: {
 	sock: ReportSocket
 	logGroupJid: string | null
 	groupName?: (jid: string) => string
 	onError?: (err: unknown) => void
 }): ModerationReporter {
-	const { sock, logGroupJid } = deps
 	const groupName = deps.groupName ?? ((jid: string) => jid)
+	const publisher = createLogGroupPublisher(deps)
 
 	return {
 		async publish(entry) {
-			if (!logGroupJid) return
-			try {
-				await sock.sendMessage(logGroupJid, { text: formatReport(entry, groupName) })
-			} catch (err) {
-				// falha ao publicar não pode derrubar o comando nem a coleta: o journal já registrou.
-				deps.onError?.(err)
-			}
+			await publisher.send(formatReport(entry, groupName))
 		},
 	}
 }
