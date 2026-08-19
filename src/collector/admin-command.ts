@@ -3,6 +3,12 @@
 // o único feedback é a mensagem de sistema nativa do WhatsApp. Toda tentativa é auditada via log.
 // Escopo: só o grupo onde o comando foi digitado (sem cascata pra comunidade).
 // A casca (loop best-effort, guarda de grupo/notify, audit, autorização) vem de command-handler.
+//
+// AUTORIZAÇÃO — a diferença para /ban, /kick e /unban é DELIBERADA, não esquecimento:
+// aqueles exigem admin da COMUNIDADE porque alcançam a comunidade inteira; este exige admin do
+// próprio GRUPO (requireGroupAdmin) porque o efeito não sai dele — é a mesma configuração que o
+// admin já pode mudar pelo menu do WhatsApp, e negá-la por comando não protegeria nada.
+// Decisão tomada em 2026-08-19; não "uniformizar" sem rever isso.
 
 import { messageText, parseCommand, type CmdParticipant } from './command-core.js'
 import { createCommandHandler, requireGroupAdmin, type CommandContext, type CommandLogger, type CommandVisibility } from './command-handler.js'
