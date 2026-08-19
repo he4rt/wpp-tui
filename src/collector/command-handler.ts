@@ -1,10 +1,14 @@
-// Casca compartilhada dos comandos de moderação do coletor (/ban, /admin) — a parte COM efeitos
-// (socket + logger). Complementa o command-core.ts (primitivos puros). Aqui vive a orquestração que
-// todo comando repete: guarda de grupo/notify, loop best-effort do lote, try/catch e factory de
-// audit (createCommandHandler), mais o par metadata + autorização de admin (requireGroupAdmin).
+// Casca compartilhada dos comandos de moderação do coletor (/ban, /kick, /admin) — a parte COM
+// efeitos (socket + logger). Complementa o command-core.ts (primitivos puros). Aqui vive a
+// orquestração que todo comando repete: guarda de grupo/notify, loop best-effort do lote, try/catch
+// e factory de audit (createCommandHandler), mais o par metadata + autorização de admin.
+//
+// A auditoria é a única memória da moderação — a remoção em si não deixa registro nenhum. Por isso
+// cada linha é AUTOSSUFICIENTE: quem, o quê, onde, quando e qual mensagem — sem precisar juntar com
+// outra linha nem com o NDJSON cru para entender o que aconteceu.
 
 import { jidNormalizedUser } from '@whiskeysockets/baileys'
-import { messageText, parseCommand, isAdmin, type CmdMessage, type CmdMessageKey, type CmdParticipant, type CmdUpsert, type ParsedCommand } from './command-core.js'
+import { messageText, parseCommand, sentAtIso, isAdmin, type CmdMessage, type CmdMessageKey, type CmdParticipant, type CmdUpsert, type ParsedCommand } from './command-core.js'
 import type { CommunityDirectory, CommunityView } from './community-directory.js'
 import { shouldDeleteCommand, type ModerationConfig } from './moderation-config.js'
 import type { ModerationReporter } from './moderation-report.js'
@@ -24,10 +28,13 @@ export interface CommandVisibility {
 	config: ModerationConfig
 	deleter: CommandDeleter
 	reporter: ModerationReporter
+	// traduz JID → nome do grupo. Sem isso o journal só mostra o JID, e quem lê precisa
+	// consultar o cache de metadata para descobrir de que grupo se trata.
+	groupName?: (jid: string) => string
 }
 
-// audit(result, extra?): registra uma tentativa. A casca injeta { actor, group }; cada comando pode
-// embrulhar para acrescentar campos fixos (o /ban acrescenta `target`, o /admin `action`).
+// audit(result, extra?): registra uma tentativa. A casca injeta a identidade da tentativa; cada
+// comando pode embrulhar para acrescentar campos fixos (o /ban acrescenta `target`, o /admin `action`).
 export type Audit = (result: string, extra?: Record<string, unknown>) => void
 
 // Contexto entregue ao domínio de cada comando. Genérico no socket (S) para cada comando expor o
@@ -39,7 +46,15 @@ export interface CommandContext<S> {
 	actor: string
 	sock: S
 	audit: Audit
+	// Apaga a mensagem do comando do grupo. Chamado pelo domínio LOGO APÓS a autorização passar —
+	// ver a nota sobre "apagar é privilégio de comando legítimo" no corpo da casca.
+	// Idempotente e best-effort: nunca lança, e chamar duas vezes não repete a revogação.
+	deleteCommand: () => Promise<void>
 }
+
+// Teto do texto do comando no log: o bastante para reconhecer o que foi digitado (e um motivo
+// longo), sem transformar a trilha de auditoria num arquivo de mensagens.
+const MAX_TEXT = 200
 
 // Fábrica da casca: nome do comando (sem prefixo) + socket + logger + a regra de domínio.
 // Retorna { handle(upsert) } best-effort — nunca lança (não pode derrubar a coleta).
@@ -58,27 +73,94 @@ export function createCommandHandler<S>(deps: {
 				try {
 					const groupJid = msg.key?.remoteJid
 					if (!groupJid || !groupJid.endsWith('@g.us')) continue // só grupos
-					const cmd = parseCommand(messageText(msg))
+					const text = messageText(msg)
+					const cmd = parseCommand(text)
 					if (cmd?.name !== name) continue // é o meu comando? (/ e !)
 					const actor = msg.key?.participant ? jidNormalizedUser(msg.key.participant) : ''
+					// resolvido uma vez por comando: entra no journal ao lado do JID.
+					const groupName = visibility?.groupName?.(groupJid)
 
-					// apaga ANTES de decidir qualquer coisa: vale para comando autorizado e para
-					// tentativa de membro comum. Quem não pode moderar nem descobre que os comandos
-					// existem — a mensagem some sem nenhuma resposta.
+					// Identidade da tentativa, repetida em TODA linha desta mensagem:
+					//  - actorName: o @lid não diz quem é ninguém; o pushName é o que um humano reconhece.
+					//  - messageId: liga a linha ao evento cru em logs/messages.upsert/ — a única forma de
+					//    reencontrar o comando depois que o bot apagou a mensagem do grupo.
+					//  - sentAt: quando foi DIGITADO (o horário do log é o do processamento; numa
+					//    reconexão o lote chega atrasado e os dois divergem).
+					//  - text: o comando como foi digitado — é o que explica um no_target ou um alvo
+					//    resolvido diferente do que o moderador achava que tinha escrito.
+					const trace = {
+						command: name,
+						actor,
+						actorName: msg.pushName ?? null,
+						group: groupJid,
+						...(groupName ? { groupName } : {}),
+						messageId: msg.key?.id ?? null,
+						sentAt: sentAtIso(msg),
+						text: text.slice(0, MAX_TEXT),
+					}
+
+					// Apagar segue o STATUS de quem digitou, não o veredito do comando: quem tem
+					// galão de admin no grupo tem a mensagem apagada mesmo com o comando recusado
+					// (moderação, ainda que negada, não é assunto público). Já a mensagem de quem
+					// não tem poder nenhum fica intacta — o bot não mexe em quem não manda, e o que
+					// houve vive na trilha de auditoria, não no silêncio.
+					// Quem dispara é a autorização (requireGroupAdmin / requireCommunityAdmin), que
+					// é onde o status de admin é descoberto.
 					let deleted = false
-					if (visibility && shouldDeleteCommand(visibility.config, groupJid)) {
+					// por que NÃO foi apagado, quando não foi: `deleted: false` sozinho é ambíguo
+					// (sala de admin? env não configurada? o revoke falhou? não era autorizado?).
+					let deleteSkip: string | null = null
+					let deleteTried = false
+
+					const deleteCommand = async (): Promise<void> => {
+						if (!visibility || deleteTried) return
+						deleteTried = true
+						if (!shouldDeleteCommand(visibility.config, groupJid)) {
+							deleteSkip = visibility.config.moderationGroupJid ? 'private_admin_group' : 'moderation_group_unset'
+							return
+						}
 						try {
 							await visibility.deleter.sendMessage(groupJid, { delete: msg.key ?? {} })
 							deleted = true
 						} catch (err) {
-							logger.info({ actor, group: groupJid, result: 'delete_error', err: String(err) }, `${name}: falha ao apagar o comando`)
+							deleteSkip = 'delete_failed'
+							logger.info({ ...trace, result: 'delete_error', err: String(err) }, `${name}: falha ao apagar o comando`)
+							// falhar em apagar é acionável (o bot perdeu admin no grupo): vai também
+							// para o grupo de log, senão só aparece para quem lê o journal.
+							void visibility.reporter.publish({
+								command: name,
+								result: 'delete_error',
+								group: groupJid,
+								actor,
+								actorName: msg.pushName ?? null,
+								text: trace.text,
+								deleted: false,
+								fields: { err: String(err) },
+							})
 						}
 					}
 
+					// `not_authorized` cobre o comando de quem não tem status de admin e também o que
+					// parou ANTES da autorização (entrada inválida, grupo desconhecido, erro de
+					// metadata) — o `result` da linha desambigua qual dos casos foi.
+					const deleteState = () => {
+						if (!visibility) return {} // sem grupos de admin configurados nada é apagado
+						if (deleted) return { deleted: true }
+						return { deleted: false, deleteSkip: deleteSkip ?? 'not_authorized' }
+					}
+
 					const audit: Audit = (result, extra = {}) => {
-						// `deleted` só aparece quando há visibilidade configurada — sem os grupos privados
-						// definidos nada é apagado, e um campo fixo em false seria só ruído no journal.
-						logger.info({ actor, group: groupJid, result, ...(visibility ? { deleted } : {}), ...extra }, `${name}: tentativa`)
+						// o estado do apagar só aparece quando há visibilidade configurada — sem os
+						// grupos privados definidos nada é apagado, e campos fixos seriam só ruído.
+						logger.info(
+							{
+								...trace,
+								result,
+								...deleteState(),
+								...extra,
+							},
+							`${name}: tentativa`,
+						)
 						// mesmo conteúdo no grupo de log; falha ali não afeta o comando (fire-and-forget).
 						void visibility?.reporter.publish({
 							command: name,
@@ -86,14 +168,29 @@ export function createCommandHandler<S>(deps: {
 							group: groupJid,
 							actor,
 							actorName: msg.pushName ?? null,
+							text: trace.text,
 							deleted,
 							fields: extra,
 						})
 					}
 
-					await domain({ msg, cmd, groupJid, actor, sock, audit })
+					await domain({ msg, cmd, groupJid, actor, sock, audit, deleteCommand })
 				} catch (err) {
-					logger.info({ result: 'handler_error', err: String(err) }, `${name}: erro inesperado`)
+					// contexto do que se sabe SEM depender do que já foi resolvido: o erro pode ter
+					// acontecido antes do trace existir, e um handler_error sem grupo nem mensagem é
+					// impossível de investigar. Nada é normalizado aqui — dentro de um catch, uma
+					// segunda exceção derrubaria a garantia de nunca lançar.
+					logger.info(
+						{
+							command: name,
+							result: 'handler_error',
+							group: msg?.key?.remoteJid ?? null,
+							actor: msg?.key?.participant ?? null,
+							messageId: msg?.key?.id ?? null,
+							err: String(err),
+						},
+						`${name}: erro inesperado`,
+					)
 				}
 			}
 		},
@@ -109,6 +206,8 @@ export async function requireGroupAdmin<M extends { participants: CmdParticipant
 	groupJid: string
 	actor: string
 	audit: Audit
+	// chamado quando o autor tem status de admin no grupo, ANTES de auditar o veredito.
+	deleteCommand?: () => Promise<void>
 }): Promise<M | null> {
 	const { sock, groupJid, actor, audit } = deps
 	let meta: M
@@ -120,9 +219,12 @@ export async function requireGroupAdmin<M extends { participants: CmdParticipant
 	}
 	const me = (meta.participants || []).find((p) => jidNormalizedUser(p.id) === actor)
 	if (!isAdmin(me)) {
-		audit('not_admin')
+		// `member` separa "membro comum tentou" de "autor nem está na lista do grupo" — o segundo
+		// caso é metadata vencida ou @lid divergente, e o diagnóstico é outro.
+		audit('not_admin', { member: Boolean(me) })
 		return null
 	}
+	await deps.deleteCommand?.()
 	return meta
 }
 
@@ -136,6 +238,9 @@ export async function requireCommunityAdmin(deps: {
 	groupJid: string
 	actor: string
 	audit: Audit
+	// chamado quando o autor tem status de admin (da comunidade OU do grupo do comando), ANTES de
+	// auditar o veredito: um admin de subgrupo recusado ainda tem a mensagem apagada.
+	deleteCommand?: () => Promise<void>
 }): Promise<CommunityView | null> {
 	const { directory, groupJid, actor, audit } = deps
 
@@ -150,8 +255,23 @@ export async function requireCommunityAdmin(deps: {
 		audit('group_unknown')
 		return null
 	}
-	if (!view.admins.has(actor)) {
-		audit('not_authorized', { scope: view.scope })
+
+	const authorized = view.admins.has(actor)
+	// A recusa mais comum na prática é admin de SUBGRUPO comandando algo de comunidade. Registrar
+	// `groupAdmin` distingue isso de membro comum sondando o bot — são conversas diferentes, e é
+	// também o que decide se a mensagem é apagada.
+	const inGroup = (view.group.participants || []).find((p) => jidNormalizedUser(p.id) === actor)
+	const groupAdmin = isAdmin(inGroup)
+
+	if (authorized || groupAdmin) await deps.deleteCommand?.()
+
+	if (!authorized) {
+		audit('not_authorized', {
+			scope: view.scope,
+			community: view.communityJid,
+			groupAdmin,
+			member: Boolean(inGroup),
+		})
 		return null
 	}
 	return view

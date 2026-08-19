@@ -46,6 +46,9 @@ export interface CommunityView {
 	owners: Set<string> // owner do grupo + da comunidade — nunca banível
 	findByJid(jid: string): DirectoryMember | null
 	findByPhone(phone: string): DirectoryMember | null
+	// Busca por final do número: cobre o moderador que digita sem o DDI (ou sem DDI e DDD).
+	// Devolve TODOS os candidatos — quem chama decide o que fazer quando há mais de um.
+	findByPhoneSuffix(suffix: string): DirectoryMember[]
 }
 
 export interface CommunityDirectory {
@@ -104,6 +107,8 @@ export function buildView(snapshot: Record<string, DirGroupMetadata>, groupJid: 
 		owners,
 		findByJid: (jid) => byJid.get(jidNormalizedUser(jid)) ?? null,
 		findByPhone: (phone) => byPhone.get(phone) ?? null,
+		findByPhoneSuffix: (suffix) =>
+			suffix ? [...byPhone.values()].filter((m) => m.phone && m.phone.endsWith(suffix)) : [],
 	}
 }
 

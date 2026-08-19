@@ -17,13 +17,12 @@ import { createOutbox } from './outbox.js'
 import { createEventRouter } from './event-router.js'
 import { createBanHandler } from './ban-command.js'
 import { createKickHandler } from './kick-command.js'
-import { createUnbanHandler } from './unban-command.js'
 import { createAdminHandler } from './admin-command.js'
 import { createCommunityDirectory } from './community-directory.js'
-import { createDenylist } from './moderation-denylist.js'
-import { createDenylistEnforcer } from './denylist-enforcer.js'
 import { resolveModerationConfig, type ModerationConfig } from './moderation-config.js'
-import { createModerationReporter } from './moderation-report.js'
+import { createModerationReporter, createLogGroupPublisher } from './moderation-report.js'
+import { createMessageLookup } from './message-lookup.js'
+import { createDeletionWatcher } from './deletion-watcher.js'
 import { startWebhookSender } from './webhook-sender.js'
 import { startHeartbeat } from './heartbeat.js'
 import type { ConnectionStatus, GroupInfo } from '../types.js'
@@ -214,38 +213,33 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 		// precisam enxergar além do grupo onde foram digitados (quem está onde, quem é admin do topo).
 		const directory = createCommunityDirectory({ sock: activeSock })
 
-		// denylist: o /ban grava, o enforcer cobra. Persistida em disco, sobrevive a restart.
-		const denylist = createDenylist()
-
 		// grupos privados de admin: onde não apagar o comando e para onde mandar o relatório.
 		const moderationConfig = deps.moderation ?? resolveModerationConfig(process.env)
 		const moderationLog = deps.logger.child({ component: 'moderation' })
+		// nomes de grupo saem do cache que já alimenta a UI — sem chamada de rede. Usado tanto no
+		// relatório do grupo de log quanto no journal, para as duas trilhas dizerem a mesma coisa.
+		const groupName = (jid: string) => loadGroupCache()[jid]?.subject || jid
 		const reporter = createModerationReporter({
 			sock: activeSock,
 			logGroupJid: moderationConfig.logGroupJid,
-			// nomes de grupo saem do mesmo cache que alimenta a UI — relatório legível sem chamada extra.
-			groupName: (jid) => loadGroupCache()[jid]?.subject || jid,
+			groupName,
 			onError: (err) => moderationLog.warn({ err: String(err) }, 'moderação: falha ao publicar no grupo de log'),
 		})
-		const visibility = { config: moderationConfig, deleter: activeSock, reporter }
+		const visibility = { config: moderationConfig, deleter: activeSock, reporter, groupName }
 
-		const enforcer = createDenylistEnforcer({
-			sock: activeSock,
-			logger: {
-				info: (obj, msg) => {
-					deps.logger.child({ component: 'denylist' }).info(obj, msg)
-					// a reentrada também vira relatório: é o único evento de moderação sem comando.
-					void reporter.publish({
-						command: 'denylist',
-						result: String(obj.result ?? 'unknown'),
-						group: String(obj.group ?? ''),
-						actor: String(obj.addedBy ?? ''),
-						fields: obj,
-					})
-				},
-			},
-			denylist,
-			directory,
+		// apagamento de mensagem de terceiro (moderação sem comando): quem apagou, de quem era e o
+		// que dizia. O conteúdo sai da trilha crua que o coletor já grava — o evento não o traz.
+		const deletionWatcher = createDeletionWatcher({
+			logger: deps.logger.child({ component: 'deletion' }),
+			lookup: createMessageLookup(),
+			groupName,
+			// o bot apagando o comando de um moderador já é auditado como comando; não repetir aqui.
+			self: () => [activeSock.user?.id, (activeSock.user as { lid?: string } | undefined)?.lid],
+			publisher: createLogGroupPublisher({
+				sock: activeSock,
+				logGroupJid: moderationConfig.logGroupJid,
+				onError: (err) => moderationLog.warn({ err: String(err) }, 'moderação: falha ao publicar apagamento no grupo de log'),
+			}),
 		})
 
 		// handler do comando /ban — usa o socket ativo; silencioso, erros vão pro log de auditoria.
@@ -253,7 +247,6 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 			sock: activeSock,
 			logger: deps.logger.child({ component: 'ban' }),
 			directory,
-			denylist,
 			visibility,
 		})
 
@@ -262,15 +255,6 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 			sock: activeSock,
 			logger: deps.logger.child({ component: 'kick' }),
 			directory,
-			visibility,
-		})
-
-		// handler do comando /unban — só mexe na denylist; o retorno em si depende de link de convite.
-		const unbanHandler = createUnbanHandler({
-			sock: activeSock,
-			logger: deps.logger.child({ component: 'unban' }),
-			directory,
-			denylist,
 			visibility,
 		})
 
@@ -297,16 +281,15 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 				directory.invalidate()
 			}
 
-			// reentrada de quem está na denylist: remove de novo. Best-effort, nunca bloqueia a coleta.
-			if (events['group-participants.update']) {
-				void enforcer.handle(events['group-participants.update'] as Parameters<typeof enforcer.handle>[0])
+			// mensagem apagada por outra pessoa: registro de moderação sem comando.
+			if (events['messages.update']) {
+				void deletionWatcher.handle(events['messages.update'] as Parameters<typeof deletionWatcher.handle>[0])
 			}
 
 			// comandos de moderação: best-effort, não bloqueiam nem derrubam a coleta (handlers nunca lançam).
 			if (events['messages.upsert']) {
 				void banHandler.handle(events['messages.upsert'] as Parameters<typeof banHandler.handle>[0])
 				void kickHandler.handle(events['messages.upsert'] as Parameters<typeof kickHandler.handle>[0])
-				void unbanHandler.handle(events['messages.upsert'] as Parameters<typeof unbanHandler.handle>[0])
 				void adminHandler.handle(events['messages.upsert'] as Parameters<typeof adminHandler.handle>[0])
 			}
 

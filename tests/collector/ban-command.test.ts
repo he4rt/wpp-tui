@@ -2,14 +2,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { parseBanCommand, messageText, createBanHandler } from '../../src/collector/ban-command.js'
 import type { BanMessage, BanSocket, BanUpdateResult } from '../../src/collector/ban-command.js'
-import fs from 'node:fs'
-import os from 'node:os'
-import path from 'node:path'
 import { createCommunityDirectory } from '../../src/collector/community-directory.js'
 import type { DirGroupMetadata } from '../../src/collector/community-directory.js'
-import { createDenylist } from '../../src/collector/moderation-denylist.js'
-
-const tmpDenylist = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), 'ban-')), 'denylist.json')
 
 test('parseBanCommand: aceita /ban como primeiro token (com reply ou menção)', () => {
 	for (const t of ['/ban', ' /ban ', '/BAN', '/ban @Fulano', '/BAN @x', '/ban 5500900000002']) {
@@ -95,9 +89,12 @@ interface Call {
 	jids: string[]
 }
 
-function harness(opts: { status?: string; snap?: Record<string, DirGroupMetadata>; throwOnRemove?: boolean; denylist?: boolean } = {}) {
+const MODERACAO = '120363000000000005@g.us'
+
+function harness(opts: { status?: string; snap?: Record<string, DirGroupMetadata>; throwOnRemove?: boolean; visibility?: boolean } = {}) {
 	const calls: Call[] = []
 	const logs: Record<string, unknown>[] = []
+	const apagadas: Array<{ jid: string; id?: string | null }> = []
 	const snap = opts.snap ?? snapshot()
 
 	const result = (jids: string[]): BanUpdateResult[] => [{ status: opts.status ?? '200', jid: jids[0] }]
@@ -121,16 +118,27 @@ function harness(opts: { status?: string; snap?: Record<string, DirGroupMetadata
 		},
 	}
 
-	const denylist = opts.denylist ? createDenylist({ path: tmpDenylist() }) : undefined
+	const visibility = opts.visibility
+		? {
+			config: { moderationGroupJid: MODERACAO, logGroupJid: null },
+			deleter: {
+				async sendMessage(jid: string, content: { delete: { id?: string | null } }) {
+					apagadas.push({ jid, id: content.delete?.id })
+					return {}
+				},
+			},
+			reporter: { async publish() {} },
+		}
+		: undefined
+
 	const handler = createBanHandler({
 		sock,
 		logger: { info: (obj) => logs.push(obj) },
 		directory: createCommunityDirectory({ sock, now: () => 1000 }),
-		denylist,
-		now: () => new Date('2026-08-18T13:17:59.895Z'),
+		visibility,
 	})
 
-	return { handler, calls, logs, denylist, last: () => logs[logs.length - 1] }
+	return { handler, calls, logs, apagadas, last: () => logs[logs.length - 1] }
 }
 
 const upsert = (text: string, opts: { from?: string; group?: string; reply?: string; mention?: string } = {}) => ({
@@ -168,6 +176,15 @@ test('/ban sem alvo nenhum ainda audita no_target (regressão do log de 18/08)',
 	assert.deepEqual(h.calls, [])
 	assert.equal(h.last().result, 'no_target')
 	assert.equal(h.last().target, null)
+	assert.equal(h.last().text, '/ban', 'sem o texto digitado, um no_target não se explica')
+})
+
+test('/ban recusado registra o motivo digitado (a recusa também precisa dizer o porquê)', async () => {
+	const h = harness()
+	await h.handler.handle(upsert('/ban 91234-5678 flood no grupo'))
+	assert.equal(h.last().result, 'phone_incomplete')
+	assert.equal(h.last().reason, 'flood no grupo')
+	assert.equal(h.last().text, '/ban 91234-5678 flood no grupo')
 })
 
 test('/ban por reply e por menção continuam funcionando', async () => {
@@ -187,6 +204,8 @@ test('/ban de admin de SUBGRUPO é recusado — a autoridade é da comunidade', 
 	assert.deepEqual(h.calls, [])
 	assert.equal(h.last().result, 'not_authorized')
 	assert.equal(h.last().scope, 'community')
+	assert.equal(h.last().community, COMMUNITY)
+	assert.equal(h.last().groupAdmin, true, 'a recusa precisa dizer que era admin do subgrupo')
 })
 
 test('/ban de membro comum é recusado', async () => {
@@ -194,6 +213,8 @@ test('/ban de membro comum é recusado', async () => {
 	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE}`, { from: VITIMA, group: MARKETING }))
 	assert.deepEqual(h.calls, [])
 	assert.equal(h.last().result, 'not_authorized')
+	assert.equal(h.last().groupAdmin, false, 'membro comum sondando ≠ admin de subgrupo')
+	assert.equal(h.last().member, true)
 })
 
 test('/ban em grupo desconhecido audita group_unknown', async () => {
@@ -243,12 +264,14 @@ test('/ban de quem não está em nenhum grupo do escopo audita target_not_member
 	assert.equal(h.last().result, 'target_not_member')
 })
 
-test('/ban de telefone fora da comunidade sem denylist audita target_not_found', async () => {
+test('/ban de telefone completo que não está em nenhum grupo audita target_not_found', async () => {
 	const h = harness()
-	await h.handler.handle(upsert('/ban 5500900000009'))
-	assert.deepEqual(h.calls, [])
+	await h.handler.handle(upsert('/ban 5500900000009 golpe'))
+	assert.deepEqual(h.calls, [], 'não há de onde remover')
 	assert.equal(h.last().result, 'target_not_found')
 	assert.equal(h.last().phone, '5500900000009')
+	assert.equal(h.last().via, 'phone_not_member')
+	assert.equal(h.last().reason, 'golpe', 'o motivo digitado tem de constar mesmo na recusa')
 })
 
 // ---- veredito honesto ----
@@ -322,46 +345,103 @@ test('handle nunca lança mesmo com socket quebrado', async () => {
 	assert.equal(logs[logs.length - 1].result, 'directory_error')
 })
 
-// ---- denylist ----
+// ---- número parcial ----
 
-test('/ban grava na denylist com motivo, autor e comunidade', async () => {
-	const h = harness({ denylist: true })
-	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE} spam de cripto`))
+test('/ban sem o DDI acha a pessoa pelo final do número', async () => {
+	const h = harness()
+	await h.handler.handle(upsert('/ban 00900000001 spam'))
 
+	assert.deepEqual(h.calls, [{ kind: 'community', jid: COMMUNITY, jids: [VITIMA] }])
 	assert.equal(h.last().result, 'removed')
-	assert.equal(h.last().denylisted, true)
-	assert.deepEqual(h.denylist!.list(), [{
-		lid: VITIMA,
-		phone: VITIMA_PHONE,
-		reason: 'spam de cripto',
-		by: ADMIN_COM,
-		at: '2026-08-18T13:17:59.895Z',
-		community: COMMUNITY,
-	}])
+	assert.equal(h.last().via, 'phone_suffix')
 })
 
-test('/ban de telefone fora da comunidade vira pré-ban na denylist', async () => {
-	const h = harness({ denylist: true })
-	await h.handler.handle(upsert('/ban 5500900000009 golpe'))
+test('/ban com número incompleto que não casa com ninguém RECUSA', async () => {
+	const h = harness()
+	await h.handler.handle(upsert('/ban 91234-5678'))
 
-	assert.deepEqual(h.calls, [], 'não há de onde remover ainda')
-	assert.equal(h.last().result, 'pre_banned')
-	const entry = h.denylist!.match({ phone: '5500900000009' })!
-	assert.equal(entry.lid, null)
-	assert.equal(entry.reason, 'golpe')
+	assert.deepEqual(h.calls, [])
+	assert.equal(h.last().result, 'phone_incomplete')
 })
 
-test('/ban recusado pelo WhatsApp ainda deixa o registro na denylist', async () => {
-	const h = harness({ denylist: true, status: '403' })
-	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE}`))
+test('/ban com final ambíguo recusa e diz quantos casaram', async () => {
+	const snap = snapshot()
+	snap[MARKETING].participants = [
+		{ id: VITIMA, phoneNumber: `${VITIMA_PHONE}@s.whatsapp.net`, admin: null },
+		{ id: '100000000000009@lid', phoneNumber: '5511900000001@s.whatsapp.net', admin: null },
+	]
+	const h = harness({ snap })
+	await h.handler.handle(upsert('/ban 900000001'))
 
-	assert.equal(h.last().result, 'remove_rejected')
-	assert.equal(h.denylist!.match({ lid: VITIMA })?.by, ADMIN_COM, 'a decisão de banir não pode sumir num 403')
+	assert.deepEqual(h.calls, [])
+	assert.equal(h.last().result, 'phone_ambiguous')
+	assert.equal(h.last().candidates, 2)
 })
 
-test('/ban bloqueado por guardrail NÃO entra na denylist', async () => {
-	const h = harness({ denylist: true })
-	await h.handler.handle(upsert('/ban', { reply: ADMIN_COM }))
-	assert.equal(h.last().result, 'self_ban')
-	assert.deepEqual(h.denylist!.list(), [])
+// ---- apagar o comando é privilégio de quem tem autorização ----
+
+test('/ban de admin da comunidade é apagado do grupo', async () => {
+	const h = harness({ visibility: true })
+	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE} spam`))
+
+	assert.deepEqual(h.apagadas, [{ jid: GENERAL, id: 'M1' }])
+	assert.equal(h.last().result, 'removed')
+	assert.equal(h.last().deleted, true)
+})
+
+test('/ban de membro comum NÃO é apagado — o bot não mexe na mensagem de quem não manda', async () => {
+	const h = harness({ visibility: true })
+	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE}`, { from: VITIMA, group: MARKETING }))
+
+	assert.deepEqual(h.apagadas, [], 'a mensagem dele fica onde está')
+	assert.equal(h.last().result, 'not_authorized')
+	assert.equal(h.last().deleted, false)
+	assert.equal(h.last().deleteSkip, 'not_authorized')
+	assert.equal(h.last().text, `/ban ${VITIMA_PHONE}`, 'mas a tentativa fica registrada por inteiro')
+})
+
+test('/ban de admin de SUBGRUPO é apagado, embora recusado — moderação negada também não é pública', async () => {
+	const h = harness({ visibility: true })
+	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE}`, { from: ADMIN_SUB }))
+
+	assert.deepEqual(h.apagadas, [{ jid: GENERAL, id: 'M1' }], 'tem galão de admin: a mensagem sai da vista')
+	assert.deepEqual(h.calls, [], 'mas o comando não age')
+	assert.equal(h.last().result, 'not_authorized')
+	assert.equal(h.last().groupAdmin, true)
+	assert.equal(h.last().deleted, true, 'apagar segue o status de quem digitou, não o veredito')
+})
+
+test('/ban de quem nem está no grupo não é apagado (não há status a proteger)', async () => {
+	const h = harness({ visibility: true })
+	// ADMIN_SUB é admin do Grupo Geral, mas não participa do Grupo Secundário
+	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE}`, { from: ADMIN_SUB, group: MARKETING }))
+
+	assert.deepEqual(h.apagadas, [])
+	assert.equal(h.last().result, 'not_authorized')
+	assert.equal(h.last().groupAdmin, false)
+	assert.equal(h.last().member, false)
+})
+
+test('/ban autorizado com alvo inválido: apagado mesmo assim (quem mandou podia mandar)', async () => {
+	const h = harness({ visibility: true })
+	await h.handler.handle(upsert('/ban'))
+
+	assert.deepEqual(h.apagadas, [{ jid: GENERAL, id: 'M1' }])
+	assert.equal(h.last().result, 'no_target')
+})
+
+test('/ban no grupo de moderação não é apagado (espaço fechado, o histórico ali é a trilha)', async () => {
+	const snap = snapshot()
+	snap[MODERACAO] = {
+		id: MODERACAO,
+		subject: 'Moderação',
+		linkedParent: COMMUNITY,
+		participants: [{ id: ADMIN_COM, admin: 'admin' }, { id: VITIMA, phoneNumber: `${VITIMA_PHONE}@s.whatsapp.net`, admin: null }],
+	}
+	const h = harness({ visibility: true, snap })
+	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE}`, { group: MODERACAO }))
+
+	assert.deepEqual(h.apagadas, [])
+	assert.equal(h.last().result, 'removed')
+	assert.equal(h.last().deleteSkip, 'private_admin_group')
 })

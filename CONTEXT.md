@@ -29,7 +29,7 @@ Parear a sessão localmente no **Modo TUI** e copiar o diretório `baileys_auth_
 Modo de execução atual: o **Núcleo do coletor** mais a interface de terminal (Ink/React) com abas Chat/Stats/Debug e envio de mensagens.
 
 **Comando de moderação**:
-Mensagem de texto num grupo que o bot interpreta como ordem (`/ban`, `/admin`; prefixo `/` ou `!`). É a única coisa que faz o bot **agir** em vez de só coletar. Silencioso por natureza: o feedback é a mensagem de sistema nativa do WhatsApp, e o resultado de toda tentativa vai para o log de auditoria.
+Mensagem de texto num grupo que o bot interpreta como ordem (`/ban`, `/kick`, `/admin`; prefixo `/` ou `!`). É a única coisa que faz o bot **agir** em vez de só coletar. Silencioso por natureza: o feedback é a mensagem de sistema nativa do WhatsApp, e o resultado de toda tentativa vai para o log de auditoria.
 _Avoid_: comando do bot (o processo tem outros comandos de CLI — `--pair` —, que não são estes).
 
 **Escopo de comunidade**:
@@ -40,9 +40,14 @@ _Avoid_: escopo global (nada atravessa comunidades diferentes).
 Snapshot em memória de quem está em quais grupos, quem são os admins do topo e qual telefone corresponde a qual `@lid`. É o que permite ao **Comando de moderação** alcançar alguém que não está no grupo onde o comando foi digitado. Vem de uma chamada `groupFetchAllParticipating`, cacheada por TTL e invalidada por entrada/saída de membro.
 _Avoid_: cache de grupos (`group-metadata.json` é outro artefato, de UI/coleta).
 
-**Denylist de moderação**:
-Registro persistente de quem foi banido (`logs/denylist.json`), indexado por `@lid` **e** por telefone. É o que separa **ban** de simples remoção: remover não impede voltar pelo link de convite, então toda entrada em grupo é conferida contra a lista e a reentrada é desfeita. Aceita **pré-ban** — um número que ainda não entrou, banido preventivamente.
-_Avoid_: blocklist (o `updateBlockStatus` do WhatsApp é outra coisa, e não impede entrar em grupo).
+**Remoção**:
+O efeito dos comandos `/ban` e `/kick`: tirar alguém de grupo(s). É um **ato, não um estado** — nada é persistido sobre quem saiu e a reentrada não é barrada. A diferença entre os dois comandos é só o **alcance**: `/ban` alcança a comunidade inteira, `/kick` só o grupo onde foi digitado.
+_Avoid_: ban permanente, blocklist (o `updateBlockStatus` do WhatsApp é outra coisa e não impede entrar em grupo); quem volta pelo link entra, e o controle é o convite.
+
+**Trilha de auditoria de moderação**:
+O registro de todo ato de moderação: toda tentativa de **Comando de moderação** — executada, negada ou recusada pelo WhatsApp — e todo **apagamento de mensagem de terceiro** (que não passa por comando). Sai em duas vias com o mesmo conteúdo: o **journal** do servidor (pino, uma linha por tentativa, com `component` do comando) e o **relatório** no grupo de log (`LOG_GROUP_JID`, legível por humano). É a única memória do que a moderação fez.
+_Avoid_: log de eventos (`logs/<evento>/<dia>.json` é a trilha crua do Baileys, outra coisa).
+Campos, resultados e consultas: [`docs/auditoria-de-comandos.md`](docs/auditoria-de-comandos.md).
 
 **Evento de grupo**:
 Evento do WhatsApp originado de um JID `@g.us` — a única coisa que o **Coletor** entrega. DMs e dados de sessão nunca saem do processo.
