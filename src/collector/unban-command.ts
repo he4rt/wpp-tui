@@ -43,7 +43,14 @@ const unbanDomain = (directory: CommunityDirectory, denylist: ModerationDenylist
 			audit('no_target')
 			return
 		}
+		if (target.via === 'phone_ambiguous') {
+			audit('phone_ambiguous', { candidates: target.candidates })
+			return
+		}
 
+		// Diferente do /ban, um número parcial que não casa com ninguém NÃO é erro aqui: o banido
+		// saiu dos grupos, então ele nunca aparece na busca por membro. O que vale é o que está na
+		// denylist — tenta remover pelo número como foi digitado.
 		const removed = denylist.remove({ lid: target.jid, phone: target.phone })
 		if (!removed) {
 			audit('not_in_denylist')

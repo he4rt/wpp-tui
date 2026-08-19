@@ -162,3 +162,10 @@ test('handle nunca lança, mesmo com evento malformado', async () => {
 	await h.enforcer.handle(addEvent({ id: '5511999@s.whatsapp.net' })) // DM
 	assert.deepEqual(h.calls, [])
 })
+
+test('enforcer: o log da reentrada traz o nome do grupo', async () => {
+	const h = harness()
+	await h.enforcer.handle(addEvent())
+	assert.equal(h.last().group, GENERAL)
+	assert.equal(h.last().groupName, GENERAL, 'sem resolvedor injetado, cai no próprio JID')
+})

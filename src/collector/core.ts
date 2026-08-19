@@ -202,14 +202,16 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 		// grupos privados de admin: onde não apagar o comando e para onde mandar o relatório.
 		const moderationConfig = deps.moderation ?? resolveModerationConfig(process.env)
 		const moderationLog = deps.logger.child({ component: 'moderation' })
+		// nomes de grupo saem do cache que já alimenta a UI — sem chamada de rede. Usado tanto no
+		// relatório do grupo de log quanto no journal, para as duas trilhas dizerem a mesma coisa.
+		const groupName = (jid: string) => loadGroupCache()[jid]?.subject || jid
 		const reporter = createModerationReporter({
 			sock: activeSock,
 			logGroupJid: moderationConfig.logGroupJid,
-			// nomes de grupo saem do mesmo cache que alimenta a UI — relatório legível sem chamada extra.
-			groupName: (jid) => loadGroupCache()[jid]?.subject || jid,
+			groupName,
 			onError: (err) => moderationLog.warn({ err: String(err) }, 'moderação: falha ao publicar no grupo de log'),
 		})
-		const visibility = { config: moderationConfig, deleter: activeSock, reporter }
+		const visibility = { config: moderationConfig, deleter: activeSock, reporter, groupName }
 
 		const enforcer = createDenylistEnforcer({
 			sock: activeSock,
@@ -228,6 +230,7 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 			},
 			denylist,
 			directory,
+			groupName,
 		})
 
 		// handler do comando /ban — usa o socket ativo; silencioso, erros vão pro log de auditoria.

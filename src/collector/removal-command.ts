@@ -59,6 +59,18 @@ const removalDomain = ({ directory, reach, denylist, now = () => new Date() }: R
 			return
 		}
 
+		// número parcial que casou com mais de um membro: agir seria um chute.
+		if (target.via === 'phone_ambiguous') {
+			audit('phone_ambiguous', { candidates: target.candidates })
+			return
+		}
+		// número parcial que não casou com ninguém: quase sempre erro de digitação. Recusa em vez de
+		// registrar pré-ban — um pré-ban de número inexistente parece sucesso e não bane ninguém.
+		if (target.via === 'phone_incomplete') {
+			audit('phone_incomplete')
+			return
+		}
+
 		// grava a decisão de banir; a partir daqui a reentrada é barrada pelo enforcer.
 		const denylistEntry = () => ({
 			lid: target.jid,
@@ -69,7 +81,7 @@ const removalDomain = ({ directory, reach, denylist, now = () => new Date() }: R
 			community: view.communityJid,
 		})
 
-		// número válido que não está em nenhum grupo: não há de onde remover, mas dá para deixar a
+		// número COMPLETO que não está em nenhum grupo: não há de onde remover, mas dá para deixar a
 		// armadilha armada — quando essa pessoa entrar, o enforcer a tira na hora.
 		if (!target.jid) {
 			if (!denylist) {

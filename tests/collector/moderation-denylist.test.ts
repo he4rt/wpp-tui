@@ -98,3 +98,33 @@ test('denylist: list devolve cópias (mutar o retorno não altera a lista)', () 
 	d.list()[0].reason = 'adulterado'
 	assert.equal(d.match({ phone: '5500900000001' })?.reason, 'spam')
 })
+
+test('denylist: migra automaticamente do caminho antigo em logs/', () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'denylist-mig-'))
+	const legacy = path.join(dir, 'logs', 'denylist.json')
+	const novo = path.join(dir, 'data', 'denylist.json')
+
+	// simula a lista que já existia no servidor antes da mudança de lugar
+	fs.mkdirSync(path.dirname(legacy), { recursive: true })
+	fs.writeFileSync(legacy, JSON.stringify({ entries: [entry()] }))
+
+	const d = createDenylist({ path: novo, legacyPath: legacy })
+	assert.equal(d.match({ lid: '100000000000004@lid' })?.reason, 'spam', 'ninguém pode sumir na migração')
+	assert.ok(fs.existsSync(novo), 'deve gravar no lugar novo')
+	assert.ok(fs.existsSync(legacy), 'o antigo fica como rede de segurança')
+})
+
+test('denylist: não migra por cima de uma lista já existente no lugar novo', () => {
+	const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'denylist-mig2-'))
+	const legacy = path.join(dir, 'logs', 'denylist.json')
+	const novo = path.join(dir, 'data', 'denylist.json')
+
+	fs.mkdirSync(path.dirname(legacy), { recursive: true })
+	fs.writeFileSync(legacy, JSON.stringify({ entries: [entry({ reason: 'antigo' })] }))
+	fs.mkdirSync(path.dirname(novo), { recursive: true })
+	fs.writeFileSync(novo, JSON.stringify({ entries: [entry({ reason: 'atual' })] }))
+
+	const d = createDenylist({ path: novo, legacyPath: legacy })
+	assert.equal(d.match({ lid: '100000000000004@lid' })?.reason, 'atual')
+	assert.equal(d.list().length, 1)
+})

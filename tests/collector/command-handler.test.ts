@@ -219,3 +219,31 @@ test('visibilidade: mensagem que não é comando não é apagada nem reportada',
 	assert.deepEqual(h.published, [])
 	assert.deepEqual(h.logs, [])
 })
+
+test('visibilidade: o journal registra o nome do grupo ao lado do JID', async () => {
+	const deleted: Array<{ jid: string }> = []
+	const logs: Array<Record<string, unknown>> = []
+	const handler = createCommandHandler({
+		name: 'ping',
+		sock: {},
+		logger: { info: (obj: Record<string, unknown>) => logs.push(obj) },
+		visibility: {
+			config: { moderationGroupJid: MOD_JID, logGroupJid: LOG_JID },
+			deleter: { async sendMessage(jid: string) { deleted.push({ jid }); return {} } },
+			reporter: { async publish() {} },
+			groupName: (jid) => (jid === PUBLICO ? 'Grupo Geral' : jid),
+		},
+		domain: async ({ audit }) => audit('ok'),
+	})
+
+	await handler.handle(pingUpsert(PUBLICO))
+	assert.equal(logs[0].group, PUBLICO)
+	assert.equal(logs[0].groupName, 'Grupo Geral')
+})
+
+test('visibilidade: sem resolvedor de nome, o journal fica como era (só o JID)', async () => {
+	const h = visibilityHarness()
+	await h.handler.handle(pingUpsert(PUBLICO))
+	assert.equal(h.last().group, PUBLICO)
+	assert.equal('groupName' in h.last(), false)
+})

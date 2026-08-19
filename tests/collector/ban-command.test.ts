@@ -365,3 +365,45 @@ test('/ban bloqueado por guardrail NÃO entra na denylist', async () => {
 	assert.equal(h.last().result, 'self_ban')
 	assert.deepEqual(h.denylist!.list(), [])
 })
+
+// ---- número parcial ----
+
+test('/ban sem o DDI acha a pessoa pelo final do número', async () => {
+	const h = harness({ denylist: true })
+	await h.handler.handle(upsert('/ban 00900000001 spam'))
+
+	assert.deepEqual(h.calls, [{ kind: 'community', jid: COMMUNITY, jids: [VITIMA] }])
+	assert.equal(h.last().result, 'removed')
+	assert.equal(h.last().via, 'phone_suffix')
+})
+
+test('/ban com número incompleto RECUSA em vez de registrar pré-ban falso', async () => {
+	const h = harness({ denylist: true })
+	await h.handler.handle(upsert('/ban 91234-5678'))
+
+	assert.deepEqual(h.calls, [])
+	assert.equal(h.last().result, 'phone_incomplete')
+	assert.deepEqual(h.denylist!.list(), [], 'não pode sujar a denylist com número inexistente')
+})
+
+test('/ban com final ambíguo recusa e diz quantos casaram', async () => {
+	const snap = snapshot()
+	snap[MARKETING].participants = [
+		{ id: VITIMA, phoneNumber: `${VITIMA_PHONE}@s.whatsapp.net`, admin: null },
+		{ id: '100000000000009@lid', phoneNumber: '5511900000001@s.whatsapp.net', admin: null },
+	]
+	const h = harness({ snap, denylist: true })
+	await h.handler.handle(upsert('/ban 900000001'))
+
+	assert.deepEqual(h.calls, [])
+	assert.equal(h.last().result, 'phone_ambiguous')
+	assert.equal(h.last().candidates, 2)
+	assert.deepEqual(h.denylist!.list(), [])
+})
+
+test('/ban com número completo desconhecido segue virando pré-ban', async () => {
+	const h = harness({ denylist: true })
+	await h.handler.handle(upsert('/ban 5500900000009 golpe'))
+	assert.equal(h.last().result, 'pre_banned')
+	assert.equal(h.denylist!.match({ phone: '5500900000009' })?.reason, 'golpe')
+})

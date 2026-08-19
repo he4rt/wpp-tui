@@ -24,6 +24,9 @@ export interface CommandVisibility {
 	config: ModerationConfig
 	deleter: CommandDeleter
 	reporter: ModerationReporter
+	// traduz JID → nome do grupo. Sem isso o journal só mostra o JID, e quem lê precisa
+	// consultar o cache de metadata para descobrir de que grupo se trata.
+	groupName?: (jid: string) => string
 }
 
 // audit(result, extra?): registra uma tentativa. A casca injeta { actor, group }; cada comando pode
@@ -61,6 +64,8 @@ export function createCommandHandler<S>(deps: {
 					const cmd = parseCommand(messageText(msg))
 					if (cmd?.name !== name) continue // é o meu comando? (/ e !)
 					const actor = msg.key?.participant ? jidNormalizedUser(msg.key.participant) : ''
+					// resolvido uma vez por comando: entra no journal ao lado do JID.
+					const groupName = visibility?.groupName?.(groupJid)
 
 					// apaga ANTES de decidir qualquer coisa: vale para comando autorizado e para
 					// tentativa de membro comum. Quem não pode moderar nem descobre que os comandos
@@ -71,14 +76,27 @@ export function createCommandHandler<S>(deps: {
 							await visibility.deleter.sendMessage(groupJid, { delete: msg.key ?? {} })
 							deleted = true
 						} catch (err) {
-							logger.info({ actor, group: groupJid, result: 'delete_error', err: String(err) }, `${name}: falha ao apagar o comando`)
+							logger.info(
+								{ actor, group: groupJid, ...(groupName ? { groupName } : {}), result: 'delete_error', err: String(err) },
+								`${name}: falha ao apagar o comando`,
+							)
 						}
 					}
 
 					const audit: Audit = (result, extra = {}) => {
 						// `deleted` só aparece quando há visibilidade configurada — sem os grupos privados
 						// definidos nada é apagado, e um campo fixo em false seria só ruído no journal.
-						logger.info({ actor, group: groupJid, result, ...(visibility ? { deleted } : {}), ...extra }, `${name}: tentativa`)
+						logger.info(
+							{
+								actor,
+								group: groupJid,
+								...(groupName ? { groupName } : {}),
+								result,
+								...(visibility ? { deleted } : {}),
+								...extra,
+							},
+							`${name}: tentativa`,
+						)
 						// mesmo conteúdo no grupo de log; falha ali não afeta o comando (fire-and-forget).
 						void visibility?.reporter.publish({
 							command: name,

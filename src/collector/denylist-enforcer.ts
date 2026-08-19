@@ -39,9 +39,11 @@ export function createDenylistEnforcer(deps: {
 	logger: CommandLogger
 	denylist: ModerationDenylist
 	directory: CommunityDirectory
+	groupName?: (jid: string) => string
 	now?: () => number
 }) {
 	const { sock, logger, denylist, directory } = deps
+	const groupNameOf = deps.groupName ?? ((jid: string) => jid)
 	const now = deps.now ?? Date.now
 	const recent = new Map<string, number>()
 
@@ -70,7 +72,16 @@ export function createDenylistEnforcer(deps: {
 
 					const audit = (result: string, extra: Record<string, unknown> = {}) =>
 						logger.info(
-							{ target: lid, phone, group: groupJid, addedBy: update.author ?? null, reason: entry.reason, result, ...extra },
+							{
+								target: lid,
+								phone,
+								group: groupJid,
+								groupName: groupNameOf(groupJid),
+								addedBy: update.author ?? null,
+								reason: entry.reason,
+								result,
+								...extra,
+							},
 							'denylist: reentrada',
 						)
 

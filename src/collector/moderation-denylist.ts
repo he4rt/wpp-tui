@@ -8,8 +8,9 @@
 // (a pessoa ainda não entrou, então não há @lid), e um ban por reply num grupo endereçado por PN
 // pode não expor o telefone. O evento de entrada traz os dois, então qualquer um dos dois casa.
 //
-// Fica em logs/denylist.json — arquivo solto na raiz de logs/, como o group-metadata.json. A poda
-// de retenção só desce em subdiretórios com nome de data (retention.ts), então não o toca.
+// Fica em data/denylist.json, FORA de logs/. É estado de negócio, não registro de execução: uma
+// limpeza de logs — coisa que se faz sem pensar num servidor — levaria a lista junto e todo mundo
+// que foi banido voltaria a passar. A migração do caminho antigo é automática.
 
 import fs from 'fs'
 import path from 'path'
@@ -41,7 +42,9 @@ export interface ModerationDenylist {
 	list(): DenylistEntry[]
 }
 
-const DEFAULT_PATH = path.resolve('logs', 'denylist.json')
+const DEFAULT_PATH = path.resolve('data', 'denylist.json')
+// onde a lista morava antes; lida uma única vez para migrar sem perder ninguém.
+const LEGACY_PATH = path.resolve('logs', 'denylist.json')
 
 function load(file: string): DenylistEntry[] {
 	if (!fs.existsSync(file)) return []
@@ -69,9 +72,17 @@ const sameIdentity = (e: DenylistEntry, c: DenylistCandidate): boolean => {
 	return Boolean(e.phone && phone && e.phone === phone)
 }
 
-export function createDenylist(deps: { path?: string } = {}): ModerationDenylist {
+export function createDenylist(deps: { path?: string; legacyPath?: string } = {}): ModerationDenylist {
 	const file = deps.path ?? DEFAULT_PATH
-	const entries = load(file)
+	const legacy = deps.legacyPath ?? LEGACY_PATH
+
+	// migração: sem arquivo no lugar novo, herda o antigo e o regrava no destino definitivo.
+	// O original fica onde está — se algo der errado, a lista ainda existe em algum lugar.
+	let entries = load(file)
+	if (!fs.existsSync(file) && fs.existsSync(legacy)) {
+		entries = load(legacy)
+		if (entries.length) save(file, entries)
+	}
 
 	return {
 		list: () => entries.map((e) => ({ ...e })),
