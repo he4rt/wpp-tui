@@ -507,3 +507,59 @@ test('group-participants.update add de quem foi banido dispara a remoção (fia�
 
 	await handle.stop()
 })
+
+test('/unban tira da denylist e a reentrada volta a ser permitida (fiação core → unban)', async () => {
+	const fake = makeFakeSocket({
+		user: { id: '55@s.whatsapp.net', name: 'Bot' },
+		groups: {
+			'com@g.us': { id: 'com@g.us', isCommunity: true, participants: [{ id: 'chefe@lid', admin: 'superadmin' }] },
+			'g1@g.us': {
+				id: 'g1@g.us',
+				linkedParent: 'com@g.us',
+				participants: [
+					{ id: 'chefe@lid', admin: null },
+					{ id: 'alvo@lid', phoneNumber: '5500900000003@s.whatsapp.net', admin: null },
+				],
+			},
+		},
+	})
+	const handle = startCollectorCore({
+		authDir: 'baileys_auth_info',
+		outboxPath: 'outbox.db',
+		logger: silentLogger,
+		baileysLogger: silentLogger,
+		webhook: null,
+		makeSocket: makeFakeMakeSocket(fake.sock),
+	})
+
+	const cmd = (text: string) => ({
+		'messages.upsert': {
+			type: 'notify',
+			messages: [{
+				key: { remoteJid: 'g1@g.us', participant: 'chefe@lid', id: 'CMD1' },
+				message: { conversation: text },
+			}],
+		},
+	})
+
+	await fake.emit(cmd('/ban 5500900000003 spam'))
+	await flush()
+	await fake.emit(cmd('/unban 5500900000003'))
+	await flush()
+
+	const antes = fake.calls.removedCommunity.length
+
+	// volta pelo link: agora não está mais na denylist, o enforcer deixa passar
+	await fake.emit({
+		'group-participants.update': {
+			id: 'g1@g.us',
+			action: 'add',
+			participants: [{ id: 'alvo@lid', phoneNumber: '5500900000003@s.whatsapp.net' }],
+		},
+	})
+	await flush()
+
+	assert.equal(fake.calls.removedCommunity.length, antes, 'nenhuma remoção nova após o /unban')
+
+	await handle.stop()
+})
