@@ -54,6 +54,13 @@ export interface CollectorCoreHandle {
 
 const msgRetryCounterCache = new NodeCache() as CacheStore
 
+// Teto da espera do stop() pelo connect() em voo. O connect() contém uma chamada HTTP
+// (fetchLatestBaileysVersion) que numa rede ruim fica pendurada — e o stop() não pode ficar preso
+// atrás dela, porque é depois dele que o outbox é fechado (checkpoint do WAL do SQLite). Sem este
+// teto, um restart durante reconexão cairia no forceMs do shutdown (saída com código 1) sem nunca
+// fechar o outbox. Em teste o connect() resolve em milissegundos: quem ganha a corrida é a promise.
+const STOP_CONNECT_WAIT_MS = 2_000
+
 // converte a metadata crua do baileys no shape persistido em cache (group-metadata.json).
 function toGroupInfo(meta: import('@whiskeysockets/baileys').GroupMetadata): GroupInfo {
 	return {
@@ -354,8 +361,14 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 			stopRetention()
 			// espera o connect() em voo terminar (ou abortar pelo guard acima) antes de fechar outbox
 			// e encerrar o socket — sem isso, stop() "concluía" enquanto uma conexão/reconexão ainda
-			// em andamento seguia criando authDir/socket por trás.
-			await connectPromise.catch(() => {})
+			// em andamento seguia criando authDir/socket por trás. Com teto: ver STOP_CONNECT_WAIT_MS.
+			await Promise.race([
+				connectPromise.catch(() => {}),
+				new Promise<void>((resolve) => {
+					const timer = setTimeout(resolve, STOP_CONNECT_WAIT_MS)
+					timer.unref?.()
+				}),
+			])
 			outbox?.close()
 			sock?.end(undefined)
 		},
