@@ -46,6 +46,10 @@ export interface CommandContext<S> {
 	actor: string
 	sock: S
 	audit: Audit
+	// Apaga a mensagem do comando do grupo. Chamado pelo domínio LOGO APÓS a autorização passar —
+	// ver a nota sobre "apagar é privilégio de comando legítimo" no corpo da casca.
+	// Idempotente e best-effort: nunca lança, e chamar duas vezes não repete a revogação.
+	deleteCommand: () => Promise<void>
 }
 
 // Teto do texto do comando no log: o bastante para reconhecer o que foi digitado (e um motivo
@@ -95,47 +99,60 @@ export function createCommandHandler<S>(deps: {
 						text: text.slice(0, MAX_TEXT),
 					}
 
-					// apaga ANTES de decidir qualquer coisa: vale para comando autorizado e para
-					// tentativa de membro comum. Quem não pode moderar nem descobre que os comandos
-					// existem — a mensagem some sem nenhuma resposta.
+					// Apagar é privilégio de comando LEGÍTIMO: quem manda apagar é o domínio, logo
+					// depois de a autorização passar. A tentativa de quem NÃO pode moderar fica
+					// visível no grupo — o bot não mexe na mensagem de quem não tem poder nenhum,
+					// e o que aconteceu vive na trilha de auditoria, não no silêncio.
 					let deleted = false
 					// por que NÃO foi apagado, quando não foi: `deleted: false` sozinho é ambíguo
-					// (sala de admin? env não configurada? o revoke falhou?).
+					// (sala de admin? env não configurada? o revoke falhou? não era autorizado?).
 					let deleteSkip: string | null = null
-					if (visibility) {
+					let deleteTried = false
+
+					const deleteCommand = async (): Promise<void> => {
+						if (!visibility || deleteTried) return
+						deleteTried = true
 						if (!shouldDeleteCommand(visibility.config, groupJid)) {
 							deleteSkip = visibility.config.moderationGroupJid ? 'private_admin_group' : 'moderation_group_unset'
-						} else {
-							try {
-								await visibility.deleter.sendMessage(groupJid, { delete: msg.key ?? {} })
-								deleted = true
-							} catch (err) {
-								deleteSkip = 'delete_failed'
-								logger.info({ ...trace, result: 'delete_error', err: String(err) }, `${name}: falha ao apagar o comando`)
-								// falhar em apagar é acionável (o bot perdeu admin no grupo): vai também
-								// para o grupo de log, senão só aparece para quem lê o journal.
-								void visibility.reporter.publish({
-									command: name,
-									result: 'delete_error',
-									group: groupJid,
-									actor,
-									actorName: msg.pushName ?? null,
-									text: trace.text,
-									deleted: false,
-									fields: { err: String(err) },
-								})
-							}
+							return
+						}
+						try {
+							await visibility.deleter.sendMessage(groupJid, { delete: msg.key ?? {} })
+							deleted = true
+						} catch (err) {
+							deleteSkip = 'delete_failed'
+							logger.info({ ...trace, result: 'delete_error', err: String(err) }, `${name}: falha ao apagar o comando`)
+							// falhar em apagar é acionável (o bot perdeu admin no grupo): vai também
+							// para o grupo de log, senão só aparece para quem lê o journal.
+							void visibility.reporter.publish({
+								command: name,
+								result: 'delete_error',
+								group: groupJid,
+								actor,
+								actorName: msg.pushName ?? null,
+								text: trace.text,
+								deleted: false,
+								fields: { err: String(err) },
+							})
 						}
 					}
 
+					// `not_authorized` cobre também o comando que parou ANTES da autorização (entrada
+					// inválida, grupo desconhecido, erro de metadata) — o `result` da linha desambigua.
+					const deleteState = () => {
+						if (!visibility) return {} // sem grupos de admin configurados nada é apagado
+						if (deleted) return { deleted: true }
+						return { deleted: false, deleteSkip: deleteSkip ?? 'not_authorized' }
+					}
+
 					const audit: Audit = (result, extra = {}) => {
-						// `deleted`/`deleteSkip` só aparecem quando há visibilidade configurada — sem os
+						// o estado do apagar só aparece quando há visibilidade configurada — sem os
 						// grupos privados definidos nada é apagado, e campos fixos seriam só ruído.
 						logger.info(
 							{
 								...trace,
 								result,
-								...(visibility ? { deleted, ...(deleteSkip ? { deleteSkip } : {}) } : {}),
+								...deleteState(),
 								...extra,
 							},
 							`${name}: tentativa`,
@@ -153,7 +170,7 @@ export function createCommandHandler<S>(deps: {
 						})
 					}
 
-					await domain({ msg, cmd, groupJid, actor, sock, audit })
+					await domain({ msg, cmd, groupJid, actor, sock, audit, deleteCommand })
 				} catch (err) {
 					// contexto do que se sabe SEM depender do que já foi resolvido: o erro pode ter
 					// acontecido antes do trace existir, e um handler_error sem grupo nem mensagem é

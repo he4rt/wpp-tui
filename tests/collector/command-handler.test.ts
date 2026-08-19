@@ -189,7 +189,9 @@ const MOD_JID = '120363000000000004@g.us'
 const LOG_JID = '120363000000000006@g.us'
 const PUBLICO = '120363000000000002@g.us'
 
-function visibilityHarness(opts: { moderationGroupJid?: string | null; failDelete?: boolean } = {}) {
+// `authorized: false` simula o domínio que NÃO passou pela autorização: ele audita sem nunca pedir
+// para apagar — é o caminho de quem não pode moderar.
+function visibilityHarness(opts: { moderationGroupJid?: string | null; failDelete?: boolean; authorized?: boolean } = {}) {
 	const deleted: Array<{ jid: string; key: unknown }> = []
 	const published: Array<Record<string, unknown>> = []
 	const logs: Array<Record<string, unknown>> = []
@@ -218,7 +220,10 @@ function visibilityHarness(opts: { moderationGroupJid?: string | null; failDelet
 		sock: {},
 		logger: { info: (obj: Record<string, unknown>) => logs.push(obj) },
 		visibility,
-		domain: async ({ audit }) => audit('ok'),
+		domain: async ({ audit, deleteCommand }) => {
+			if (opts.authorized !== false) await deleteCommand()
+			audit('ok')
+		},
 	})
 
 	return { handler, deleted, published, logs, last: () => logs[logs.length - 1] }
@@ -279,6 +284,33 @@ test('visibilidade: falha ao apagar é logada, reportada no grupo de log e o com
 	assert.deepEqual(h.published.map((p) => p.result), ['delete_error', 'ok'])
 })
 
+test('visibilidade: comando de quem NÃO passou pela autorização não é apagado, mas é reportado', async () => {
+	const h = visibilityHarness({ authorized: false })
+	await h.handler.handle(pingUpsert(PUBLICO))
+
+	assert.deepEqual(h.deleted, [], 'a mensagem de quem não pode moderar fica onde está')
+	assert.equal(h.last().deleted, false)
+	assert.equal(h.last().deleteSkip, 'not_authorized')
+	assert.equal(h.published.length, 1, 'a tentativa continua indo para o grupo de log')
+})
+
+test('visibilidade: deleteCommand é idempotente (duas chamadas, uma revogação)', async () => {
+	const deleted: Array<{ jid: string }> = []
+	const handler = createCommandHandler({
+		name: 'ping',
+		sock: {},
+		logger: { info: () => {} },
+		visibility: {
+			config: { moderationGroupJid: MOD_JID, logGroupJid: LOG_JID },
+			deleter: { async sendMessage(jid: string) { deleted.push({ jid }); return {} } },
+			reporter: { async publish() {} },
+		},
+		domain: async ({ audit, deleteCommand }) => { await deleteCommand(); await deleteCommand(); audit('ok') },
+	})
+	await handler.handle(pingUpsert(PUBLICO))
+	assert.equal(deleted.length, 1)
+})
+
 test('visibilidade: mensagem que não é comando não é apagada nem reportada', async () => {
 	const h = visibilityHarness()
 	await h.handler.handle({
@@ -303,7 +335,7 @@ test('visibilidade: o journal registra o nome do grupo ao lado do JID', async ()
 			reporter: { async publish() {} },
 			groupName: (jid) => (jid === PUBLICO ? 'Grupo Geral' : jid),
 		},
-		domain: async ({ audit }) => audit('ok'),
+		domain: async ({ audit, deleteCommand }) => { await deleteCommand(); audit('ok') },
 	})
 
 	await handler.handle(pingUpsert(PUBLICO))

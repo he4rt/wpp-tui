@@ -565,5 +565,19 @@ test('comando em grupo comum é apagado e reportado no grupo de log (fiação co
 	await flush()
 	assert.equal(fake.calls.deleted.length, 1, 'nada apagado no grupo de moderação')
 
+	// tentativa de quem NÃO é admin da comunidade: fica visível no grupo (só a trilha registra)
+	await fake.emit({
+		'messages.upsert': {
+			type: 'notify',
+			messages: [{
+				key: { remoteJid: 'g1@g.us', participant: 'alvo@lid', id: 'CMD2' },
+				pushName: 'Membro Comum',
+				message: { extendedTextMessage: { text: '/ban', contextInfo: { participant: 'chefe@lid', stanzaId: 'S2' } } },
+			}],
+		},
+	})
+	await flush()
+	assert.equal(fake.calls.deleted.length, 1, 'a mensagem de quem não pode moderar não é apagada')
+
 	await handle.stop()
 })

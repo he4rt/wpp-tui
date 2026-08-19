@@ -14,7 +14,9 @@ foi digitado), **`/admin on|off`** (liga/desliga "somente admins falam" no grupo
 mensagem "/ban 5500900000001 spam" num grupo
         │
         ▼
- command-handler.ts ── apaga a mensagem (fora dos grupos de admin)
+ autorização ──┬── passou ──► apaga a mensagem do grupo (fora dos grupos de admin)
+               │
+               └── não passou ──► mensagem INTACTA (o bot não mexe em quem não manda)
         │
         ├──► journal (pino)              ──► journalctl --user -u whatsapp-collector
         │    1 linha JSON por tentativa       (ou wa-logs.txt no Modo TUI)
@@ -22,6 +24,11 @@ mensagem "/ban 5500900000001 spam" num grupo
         └──► relatório no grupo de log   ──► LOG_GROUP_JID (texto legível)
              (no-op se a env não existir)
 ```
+
+**Apagar é privilégio de comando legítimo.** Só o comando de quem passou pela autorização sai da
+vista do grupo — moderação não vira assunto público. A tentativa de quem não tem poder nenhum fica
+onde está: o bot não apaga a mensagem de quem não fez nada de errado, e o que houve vive aqui na
+trilha, não no silêncio.
 
 Toda **tentativa** entra nas duas — inclusive as negadas, as recusadas pelo WhatsApp e as que nem
 tinham alvo. O relatório é o que o moderador lê; o journal é o que o operador consulta quando o
@@ -56,7 +63,7 @@ Injetados pela casca (`command-handler.ts`) em **todas** as linhas daquela mensa
 | `text` | o que foi digitado | comando cru, truncado em 200 chars |
 | `result` | o que aconteceu | ver as tabelas abaixo |
 | `deleted` | a mensagem foi apagada? | só quando há grupos de admin configurados |
-| `deleteSkip` | por que não apagou | `private_admin_group`, `moderation_group_unset`, `delete_failed` |
+| `deleteSkip` | por que não apagou | `not_authorized` (não passou pela autorização, ou parou antes dela), `private_admin_group`, `moderation_group_unset`, `delete_failed` |
 
 O `component` do pino repete o comando (`component: 'ban'`), e o `time` do pino é o **processamento**
 — para o horário de quem digitou, use `sentAt`.

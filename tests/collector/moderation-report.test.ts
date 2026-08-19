@@ -117,7 +117,69 @@ test('relatório do /admin diz o que o grupo virou, não só "applied"', () => {
 		groupName,
 	)
 	assert.match(text, /^⚙️ \/admin · applied$/m)
-	assert.match(text, /^somente admins falam: on \(off → on\)$/m)
+	assert.match(text, /^somente admins falam: off → on$/m)
+})
+
+test('relatório do /admin distingue "já estava" de "acabou de mudar"', () => {
+	const jaEstava = formatReport(
+		entry({ command: 'admin', result: 'already_off', text: '!admin off', fields: { action: 'off', announceBefore: false } }),
+		groupName,
+	)
+	assert.match(jaEstava, /^somente admins falam: já estava off$/m)
+
+	const soPediu = formatReport(
+		entry({ command: 'admin', result: 'not_admin', text: '/admin on', fields: { action: 'on', member: true } }),
+		groupName,
+	)
+	assert.match(soPediu, /^pediu: somente admins falam on$/m)
+})
+
+test('recusa por regra mostra QUEM tentou (a distinção que só existia no log)', () => {
+	const sub = formatReport(
+		entry({ result: 'not_authorized', fields: { scope: 'community', groupAdmin: true, member: true } }),
+		groupName,
+	)
+	assert.match(sub, /^quem tentou: admin deste grupo \(a autoridade é da comunidade\)$/m)
+
+	const comum = formatReport(
+		entry({ result: 'not_authorized', fields: { scope: 'community', groupAdmin: false, member: true } }),
+		groupName,
+	)
+	assert.match(comum, /^quem tentou: membro comum$/m)
+
+	const fora = formatReport(
+		entry({ command: 'admin', result: 'not_admin', fields: { action: 'on', member: false } }),
+		groupName,
+	)
+	assert.match(fora, /^quem tentou: não está na lista de participantes do grupo$/m)
+})
+
+test('not_admin é recusa por regra, com o mesmo ícone do not_authorized', () => {
+	assert.match(formatReport(entry({ command: 'admin', result: 'not_admin', fields: {} }), groupName), /^🚫 /)
+})
+
+test('final de número ambíguo diz quantos casaram e não finge que é telefone', () => {
+	const text = formatReport(
+		entry({ result: 'phone_ambiguous', text: '/ban 900000001', fields: { phone: '900000001', via: 'phone_ambiguous', candidates: 2 } }),
+		groupName,
+	)
+	assert.match(text, /^número digitado: 900000001$/m)
+	assert.match(text, /^casou com 2 membros — digite mais dígitos$/m)
+	assert.doesNotMatch(text, /alvo:/, 'não houve alvo — não pode parecer que houve')
+	assert.doesNotMatch(text, /\+900000001/, 'número parcial não é telefone formatável')
+})
+
+test('falha traz o motivo do erro (truncado), não só o ícone de alerta', () => {
+	const text = formatReport(
+		entry({ result: 'delete_error', deleted: false, fields: { err: 'Error: forbidden' } }),
+		groupName,
+	)
+	assert.match(text, /^⚠️ \/ban · delete_error$/m)
+	assert.match(text, /^erro: Error: forbidden$/m)
+
+	const longo = formatReport(entry({ result: 'handler_error', fields: { err: 'x'.repeat(500) } }), groupName)
+	const linha = longo.split('\n').find((l) => l.startsWith('erro: '))!
+	assert.equal(linha.length, 'erro: '.length + 160)
 })
 
 test('relatório de tentativa sem alvo mostra o que foi digitado (é o que explica a recusa)', () => {

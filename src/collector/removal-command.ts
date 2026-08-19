@@ -36,9 +36,13 @@ export interface RemovalDeps {
 // A autorização vem ANTES da resolução do alvo porque é a view (o diretório da comunidade) que
 // traduz telefone → @lid; sem ela não há como resolver quem não está no grupo do comando.
 const removalDomain = ({ directory, reach }: RemovalDeps) =>
-	async ({ msg, cmd, groupJid, actor, sock, audit: baseAudit }: CommandContext<RemovalSocket>): Promise<void> => {
+	async ({ msg, cmd, groupJid, actor, sock, audit: baseAudit, deleteCommand }: CommandContext<RemovalSocket>): Promise<void> => {
 		const view = await requireCommunityAdmin({ directory, groupJid, actor, audit: baseAudit })
 		if (!view) return // já auditou group_unknown / not_authorized / directory_error
+
+		// autorizado: a partir daqui o comando é legítimo e sai da vista do grupo. A tentativa de
+		// quem NÃO passou por aqui fica onde está — o bot não apaga mensagem de quem não manda.
+		await deleteCommand()
 
 		const target = resolveTarget(msg, cmd, view)
 		// todo log carrega o alvo e o escopo: embrulha o audit base uma vez, e só o wrapper

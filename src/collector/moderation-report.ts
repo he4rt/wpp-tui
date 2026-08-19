@@ -29,6 +29,7 @@ const ICON: Record<string, string> = {
 }
 const REJECTED = new Set([
 	'not_authorized',
+	'not_admin', // mesma natureza do not_authorized: barrado por regra, não por falha
 	'self_ban',
 	'target_is_admin',
 	'target_is_community_admin',
@@ -52,6 +53,10 @@ export function prettyPhone(phone: unknown): string | null {
 	return m ? `+${m[1]} ${m[2]} ${m[3]}-${m[4]}` : `+${phone}`
 }
 
+// Teto do erro no relatório: stack traces do Baileys chegam a milhares de caracteres, e a mensagem
+// no WhatsApp precisa continuar legível. O log do servidor guarda o erro inteiro.
+const MAX_ERR = 160
+
 const asString = (v: unknown): string | null => (typeof v === 'string' && v ? v : null)
 const asList = (v: unknown): string[] => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : [])
 
@@ -67,22 +72,40 @@ export function formatReport(entry: ReportEntry, groupName: (jid: string) => str
 	// e, como o bot apaga a mensagem do grupo, aqui é onde ela sobrevive de forma legível.
 	if (entry.text) lines.push(`digitou: ${entry.text}`)
 
+	const via = asString(f.via)
+	// número parcial não é um telefone: formatá-lo como "+912345678" faz parecer que o alvo foi
+	// identificado, quando o que houve foi uma busca que não fechou.
+	const parcial = via === 'phone_incomplete' || via === 'phone_ambiguous'
 	const target = asString(f.target)
 	const phone = prettyPhone(f.phone)
-	if (target || phone) {
+
+	if (parcial) {
+		if (asString(f.phone)) lines.push(`número digitado: ${asString(f.phone)}`)
+	} else if (target || phone) {
 		lines.push(`alvo: ${[phone, target].filter(Boolean).join(' · ')}`)
 	}
 
-	const via = asString(f.via)
 	if (via) lines.push(`identificado por: ${via}`)
 
-	// /admin: sem isto um "applied" não diz se o grupo foi fechado ou reaberto.
+	// 2. quantos membros casaram com o final digitado — sem isso, "ambíguo" não diz o que fazer.
+	if (typeof f.candidates === 'number') lines.push(`casou com ${f.candidates} membros — digite mais dígitos`)
+
+	// 1. o log já separava admin de subgrupo de membro comum; o relatório escondia a diferença.
+	if (f.groupAdmin === true) lines.push('quem tentou: admin deste grupo (a autoridade é da comunidade)')
+	else if (f.member === false) lines.push('quem tentou: não está na lista de participantes do grupo')
+	else if (f.member === true) lines.push('quem tentou: membro comum')
+
+	// /admin: sem isto um "applied" não diz se o grupo foi fechado ou reaberto — e um "already_off"
+	// parecia aplicação.
 	const action = asString(f.action)
 	if (action) {
-		const estado = typeof f.announceBefore === 'boolean' && typeof f.announceAfter === 'boolean'
-			? ` (${f.announceBefore ? 'on' : 'off'} → ${f.announceAfter ? 'on' : 'off'})`
-			: ''
-		lines.push(`somente admins falam: ${action}${estado}`)
+		if (typeof f.announceBefore === 'boolean' && typeof f.announceAfter === 'boolean') {
+			lines.push(`somente admins falam: ${f.announceBefore ? 'on' : 'off'} → ${f.announceAfter ? 'on' : 'off'}`)
+		} else if (entry.result.startsWith('already_')) {
+			lines.push(`somente admins falam: já estava ${action}`)
+		} else {
+			lines.push(`pediu: somente admins falam ${action}`)
+		}
 	}
 
 	const removedFrom = asList(f.removedFrom)
@@ -97,6 +120,11 @@ export function formatReport(entry: ReportEntry, groupName: (jid: string) => str
 
 	const status = asString(f.status)
 	if (status && status !== '200') lines.push(`resposta do WhatsApp: ${status}${status === '403' ? ' (o bot não é admin da comunidade)' : ''}`)
+
+	// sem o erro, um "⚠️ delete_error" no grupo de log não diz por que falhou — e é justamente nos
+	// casos acionáveis (bot perdeu admin, exceção inesperada) que ele aparece.
+	const err = asString(f.err)
+	if (err) lines.push(`erro: ${err.slice(0, MAX_ERR)}`)
 
 	if (entry.deleted) lines.push('comando apagado ✓')
 

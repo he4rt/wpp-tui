@@ -35,7 +35,7 @@ export interface AdminSocket {
 
 // Domínio do /admin: resolve on/off (entrada) → autoriza → idempotência → troca o setting. A ordem
 // entrada→auth é preservada porque requireGroupAdmin é chamado só depois de validar o argumento.
-const adminDomain = async ({ msg, groupJid, actor, sock, audit: baseAudit }: CommandContext<AdminSocket>): Promise<void> => {
+const adminDomain = async ({ msg, groupJid, actor, sock, audit: baseAudit, deleteCommand }: CommandContext<AdminSocket>): Promise<void> => {
 	const action = parseAdminAction(messageText(msg))
 	// o audit do admin carrega `action` em todo log (como antes): embrulha o audit base uma vez.
 	// só o wrapper enriquecido fica em escopo (chama-se `audit`) — impossível logar sem o `action`.
@@ -44,6 +44,9 @@ const adminDomain = async ({ msg, groupJid, actor, sock, audit: baseAudit }: Com
 	if (!action) { audit('no_action'); return } // /admin sem on|off válido
 	const meta = await requireGroupAdmin<AdminGroupMetadata>({ sock, groupJid, actor, audit })
 	if (!meta) return // já auditou not_admin / metadata_error
+
+	// autorizado: só agora o comando sai da vista do grupo (ver command-handler.ts).
+	await deleteCommand()
 
 	// idempotência: se o grupo já está no estado alvo, não chama a API
 	const wantAnnounce = action === 'on'
