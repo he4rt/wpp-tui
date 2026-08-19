@@ -85,3 +85,9 @@ Five triage roles + `type:*` / `difficulty:*` labels, following the `brd-digital
 ### Domain docs
 
 Single-context: `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+### Moderation audit trail
+
+What each command (`/ban`, `/kick`, `/admin`) logs — fields, results, and how to query it:
+`docs/auditoria-de-comandos.md`. Removal persists nothing, so this trail is the only record of what
+happened.
