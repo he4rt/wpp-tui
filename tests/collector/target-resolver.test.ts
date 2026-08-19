@@ -79,9 +79,9 @@ test('resolveTarget: motivo é o que sobra depois do telefone, com o case preser
 	assert.equal(t.reason, 'Spam De Cripto')
 })
 
-test('resolveTarget: telefone válido fora da comunidade vira pré-ban', () => {
+test('resolveTarget: telefone completo fora da comunidade resolve como phone_not_member', () => {
 	const t = resolveTarget(textMsg('/ban 5500900000009 furou fila'), cmd('/ban 5500900000009 furou fila'), view)!
-	assert.equal(t.via, 'phone_pre_ban')
+	assert.equal(t.via, 'phone_not_member')
 	assert.equal(t.jid, null)
 	assert.equal(t.phone, '5500900000009')
 	assert.deepEqual(t.foundIn, [])
@@ -140,4 +140,52 @@ test('resolveTarget: telefone formatado com motivo depois', () => {
 	const t = resolveTarget(textMsg('/ban +55 00 90000-0001 spam de cripto'), cmd('/ban +55 00 90000-0001 spam de cripto'), view)!
 	assert.equal(t.jid, VITIMA)
 	assert.equal(t.reason, 'spam de cripto')
+})
+
+// ---- número parcial: o erro mais comum é esquecer o DDI ----
+
+test('resolveTarget: número sem o 55 casa pelo final quando há um só candidato', () => {
+	const t = resolveTarget(textMsg('/ban 00900000001'), cmd('/ban 00900000001'), view)!
+	assert.equal(t.via, 'phone_suffix')
+	assert.equal(t.jid, VITIMA)
+	assert.equal(t.phone, '5500900000001', 'guarda o número completo do membro, não o digitado')
+	assert.deepEqual(t.foundIn, [MARKETING])
+})
+
+test('resolveTarget: número parcial formatado também casa pelo final', () => {
+	const t = resolveTarget(textMsg('/ban (00) 90000-0001 flood'), cmd('/ban (00) 90000-0001 flood'), view)!
+	assert.equal(t.via, 'phone_suffix')
+	assert.equal(t.jid, VITIMA)
+	assert.equal(t.reason, 'flood')
+})
+
+test('resolveTarget: número parcial que não casa com ninguém é incompleto, NÃO pré-ban', () => {
+	const t = resolveTarget(textMsg('/ban 91234-5678'), cmd('/ban 91234-5678'), view)!
+	assert.equal(t.via, 'phone_incomplete')
+	assert.equal(t.jid, null)
+})
+
+test('resolveTarget: final ambíguo devolve a contagem em vez de chutar', () => {
+	const doisIguais: Record<string, DirGroupMetadata> = {
+		...snapshot,
+		[MARKETING]: {
+			...snapshot[MARKETING],
+			participants: [
+				{ id: VITIMA, phoneNumber: '5500900000001@s.whatsapp.net', admin: null },
+				{ id: '100000000000009@lid', phoneNumber: '5511900000001@s.whatsapp.net', admin: null },
+			],
+		},
+	}
+	const v = buildView(doisIguais, GENERAL, community)!
+	const t = resolveTarget(textMsg('/ban 900000001'), cmd('/ban 900000001'), v)!
+	assert.equal(t.via, 'phone_ambiguous')
+	assert.equal(t.jid, null)
+	assert.equal(t.candidates, 2)
+})
+
+test('resolveTarget: número COMPLETO que não casa com ninguém não vira alvo', () => {
+	const t = resolveTarget(textMsg('/ban 5500900000009'), cmd('/ban 5500900000009'), view)!
+	assert.equal(t.via, 'phone_not_member')
+	assert.equal(t.jid, null)
+	assert.equal(t.phone, '5500900000009')
 })

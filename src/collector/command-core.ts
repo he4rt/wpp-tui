@@ -21,6 +21,9 @@ export interface CmdMessage {
 	key?: CmdMessageKey | null
 	message?: CmdMessageContent | null
 	pushName?: string | null // nome que o autor exibe — usado no relatório de moderação
+	// segundos UNIX de quando a mensagem foi enviada. O Baileys entrega number ou Long (protobuf);
+	// só o toNumber() interessa aqui, então o shape mínimo aceita os dois.
+	messageTimestamp?: number | { toNumber(): number } | null
 }
 export interface CmdParticipant {
 	id: string
@@ -57,6 +60,17 @@ export function parseCommand(text: string): ParsedCommand | null {
 	if (!m) return null
 	const rawArgs = tokens.slice(1)
 	return { name: m[1].toLowerCase(), args: rawArgs.map((t) => t.toLowerCase()), rawArgs }
+}
+
+// Quando o comando foi DIGITADO, em ISO — não quando o log foi escrito. Os dois divergem em
+// reconexão (o lote chega atrasado), e é essa diferença que explica um comando que "não funcionou
+// na hora". null quando a mensagem não trouxe timestamp utilizável.
+export function sentAtIso(msg: CmdMessage): string | null {
+	const ts = msg.messageTimestamp
+	if (ts === null || ts === undefined) return null
+	const seconds = typeof ts === 'number' ? ts : typeof ts.toNumber === 'function' ? ts.toNumber() : NaN
+	if (!Number.isFinite(seconds) || seconds <= 0) return null
+	return new Date(seconds * 1000).toISOString()
 }
 
 export function isAdmin(p?: { admin?: 'admin' | 'superadmin' | null } | null): boolean {

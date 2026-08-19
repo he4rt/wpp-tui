@@ -465,7 +465,7 @@ test('messages.upsert com /kick remove só do grupo (fiação core → kick-comm
 	await handle.stop()
 })
 
-test('group-participants.update add de quem foi banido dispara a remoção (fiação core → enforcer)', async () => {
+test('reentrada de quem foi removido NÃO dispara nova remoção (remoção é ato, não estado)', async () => {
 	const fake = makeFakeSocket({
 		user: { id: '55@s.whatsapp.net', name: 'Bot' },
 		groups: {
@@ -486,7 +486,7 @@ test('group-participants.update add de quem foi banido dispara a remoção (fia�
 		makeSocket: makeFakeMakeSocket(fake.sock),
 	})
 
-	// 1) o admin bane
+	// 1) o admin remove da comunidade
 	await fake.emit({
 		'messages.upsert': {
 			type: 'notify',
@@ -499,72 +499,13 @@ test('group-participants.update add de quem foi banido dispara a remoção (fia�
 	await flush()
 	assert.equal(fake.calls.removedCommunity.length, 1)
 
-	// 2) o banido volta pelo link — o enforcer tira de novo
+	// 2) a pessoa volta pelo link de convite: o bot NÃO reage — nada foi persistido sobre ela.
 	await fake.emit({
 		'group-participants.update': { id: 'g1@g.us', action: 'add', participants: [{ id: 'alvo@lid' }] },
 	})
 	await flush()
 
-	assert.deepEqual(fake.calls.removedCommunity, [
-		{ jid: 'com@g.us', jids: ['alvo@lid'] },
-		{ jid: 'com@g.us', jids: ['alvo@lid'] },
-	])
-
-	await handle.stop()
-})
-
-test('/unban tira da denylist e a reentrada volta a ser permitida (fiação core → unban)', async () => {
-	const fake = makeFakeSocket({
-		user: { id: '55@s.whatsapp.net', name: 'Bot' },
-		groups: {
-			'com@g.us': { id: 'com@g.us', isCommunity: true, participants: [{ id: 'chefe@lid', admin: 'superadmin' }] },
-			'g1@g.us': {
-				id: 'g1@g.us',
-				linkedParent: 'com@g.us',
-				participants: [
-					{ id: 'chefe@lid', admin: null },
-					{ id: 'alvo@lid', phoneNumber: '5500900000003@s.whatsapp.net', admin: null },
-				],
-			},
-		},
-	})
-	const handle = startCollectorCore({
-		authDir: 'baileys_auth_info',
-		outboxPath: 'outbox.db',
-		logger: silentLogger,
-		baileysLogger: silentLogger,
-		webhook: null,
-		makeSocket: makeFakeMakeSocket(fake.sock),
-	})
-
-	const cmd = (text: string) => ({
-		'messages.upsert': {
-			type: 'notify',
-			messages: [{
-				key: { remoteJid: 'g1@g.us', participant: 'chefe@lid', id: 'CMD1' },
-				message: { conversation: text },
-			}],
-		},
-	})
-
-	await fake.emit(cmd('/ban 5500900000003 spam'))
-	await flush()
-	await fake.emit(cmd('/unban 5500900000003'))
-	await flush()
-
-	const antes = fake.calls.removedCommunity.length
-
-	// volta pelo link: agora não está mais na denylist, o enforcer deixa passar
-	await fake.emit({
-		'group-participants.update': {
-			id: 'g1@g.us',
-			action: 'add',
-			participants: [{ id: 'alvo@lid', phoneNumber: '5500900000003@s.whatsapp.net' }],
-		},
-	})
-	await flush()
-
-	assert.equal(fake.calls.removedCommunity.length, antes, 'nenhuma remoção nova após o /unban')
+	assert.equal(fake.calls.removedCommunity.length, 1, 'reentrada não pode ser desfeita automaticamente')
 
 	await handle.stop()
 })
@@ -616,6 +557,7 @@ test('comando em grupo comum é apagado e reportado no grupo de log (fiação co
 	assert.ok(report, 'deveria ter publicado no grupo de log')
 	assert.match(report!.text, /\/ban · removed/)
 	assert.match(report!.text, /por: Clinton/)
+	assert.match(report!.text, /digitou: \/ban/, 'o relatório mostra o comando como foi digitado')
 	assert.match(report!.text, /comando apagado ✓/)
 
 	// no grupo de moderação o comando é preservado

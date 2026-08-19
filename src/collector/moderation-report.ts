@@ -8,11 +8,12 @@
 // O bot segue silencioso onde importa: nada é enviado a grupo comum, só ao grupo de log.
 
 export interface ReportEntry {
-	command: string // 'ban' | 'kick' | 'unban' | 'admin' | 'denylist'
+	command: string // 'ban' | 'kick' | 'admin'
 	result: string // 'removed', 'not_authorized', 'remove_rejected'…
 	group: string // JID do grupo onde o comando foi digitado
 	actor: string // @lid de quem comandou
 	actorName?: string | null // pushName, quando a mensagem trouxe
+	text?: string | null // o comando como foi digitado (já truncado pela casca)
 	deleted?: boolean // o comando foi apagado do grupo?
 	fields: Record<string, unknown> // o resto do audit (target, phone, status, reason…)
 }
@@ -24,9 +25,6 @@ export interface ReportSocket {
 // Resultados agrupados por natureza — o ícone é o que o moderador lê primeiro na lista.
 const ICON: Record<string, string> = {
 	removed: '🔨',
-	pre_banned: '🪤',
-	unbanned: '🔓',
-	enforced: '🔁',
 	applied: '⚙️',
 }
 const REJECTED = new Set([
@@ -38,13 +36,13 @@ const REJECTED = new Set([
 	'target_not_member',
 	'target_not_in_group',
 ])
-const FAILED = new Set(['remove_rejected', 'enforce_rejected', 'remove_error', 'enforce_error', 'setting_error', 'directory_error', 'handler_error'])
+const FAILED = new Set(['remove_rejected', 'remove_error', 'setting_error', 'directory_error', 'metadata_error', 'delete_error', 'handler_error'])
 
 function iconFor(result: string): string {
 	if (ICON[result]) return ICON[result]
 	if (REJECTED.has(result)) return '🚫'
 	if (FAILED.has(result)) return '⚠️'
-	return 'ℹ️' // no_target, target_not_found, not_in_denylist, already_on/off, duplicate_ignored…
+	return 'ℹ️' // no_target, target_not_found, phone_incomplete, already_on/off…
 }
 
 // "5500900000001" → "+55 00 90000-0001" quando dá; senão devolve como está.
@@ -65,6 +63,9 @@ export function formatReport(entry: ReportEntry, groupName: (jid: string) => str
 
 	lines.push(`grupo: ${groupName(entry.group)}`)
 	lines.push(`por: ${entry.actorName ? `${entry.actorName} · ` : ''}${entry.actor || '?'}`)
+	// o comando como foi digitado: é o que explica um no_target ou um alvo diferente do esperado —
+	// e, como o bot apaga a mensagem do grupo, aqui é onde ela sobrevive de forma legível.
+	if (entry.text) lines.push(`digitou: ${entry.text}`)
 
 	const target = asString(f.target)
 	const phone = prettyPhone(f.phone)
@@ -74,6 +75,15 @@ export function formatReport(entry: ReportEntry, groupName: (jid: string) => str
 
 	const via = asString(f.via)
 	if (via) lines.push(`identificado por: ${via}`)
+
+	// /admin: sem isto um "applied" não diz se o grupo foi fechado ou reaberto.
+	const action = asString(f.action)
+	if (action) {
+		const estado = typeof f.announceBefore === 'boolean' && typeof f.announceAfter === 'boolean'
+			? ` (${f.announceBefore ? 'on' : 'off'} → ${f.announceAfter ? 'on' : 'off'})`
+			: ''
+		lines.push(`somente admins falam: ${action}${estado}`)
+	}
 
 	const removedFrom = asList(f.removedFrom)
 	if (removedFrom.length) lines.push(`saiu de: ${removedFrom.map(groupName).join(', ')}`)
@@ -85,17 +95,9 @@ export function formatReport(entry: ReportEntry, groupName: (jid: string) => str
 	const reason = asString(f.reason)
 	if (reason) lines.push(`motivo: ${reason}`)
 
-	// contexto do /unban: o que está sendo desfeito
-	const bannedBy = asString(f.bannedBy)
-	if (bannedBy) lines.push(`ban original: ${bannedBy} em ${asString(f.bannedAt) ?? '?'}${f.bannedReason ? ` — ${f.bannedReason}` : ''}`)
-
 	const status = asString(f.status)
 	if (status && status !== '200') lines.push(`resposta do WhatsApp: ${status}${status === '403' ? ' (o bot não é admin da comunidade)' : ''}`)
 
-	const addedBy = asString(f.addedBy)
-	if (addedBy) lines.push(`adicionado por: ${addedBy}`)
-
-	if (f.denylisted) lines.push('denylist: registrado')
 	if (entry.deleted) lines.push('comando apagado ✓')
 
 	return lines.join('\n')

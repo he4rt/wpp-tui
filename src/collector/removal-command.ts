@@ -3,13 +3,15 @@
 // Todo o resto — autorização pelo topo, resolução do alvo, guardrails, veredito honesto — é igual,
 // e viver num lugar só evita que os dois divirjam silenciosamente.
 //
+// Remoção é um ATO, não um estado: nada é persistido sobre quem foi removido. Quem volta pelo link
+// de convite entra de novo — se precisar barrar, feche o convite ou remova outra vez.
+//
 // Segue o mesmo espírito de command-handler.ts: a casca genérica cuida do loop e da auditoria;
 // aqui mora a regra de remoção; os arquivos ban-command.ts e kick-command.ts são cascas finas.
 
 import { createCommandHandler, requireCommunityAdmin, type CommandContext, type CommandLogger, type CommandVisibility } from './command-handler.js'
 import { createCommunityDirectory, type CommunityDirectory, type DirectorySocket } from './community-directory.js'
 import { resolveTarget } from './target-resolver.js'
-import type { ModerationDenylist } from './moderation-denylist.js'
 
 export interface RemovalUpdateResult {
 	status: string
@@ -25,18 +27,15 @@ export interface RemovalSocket extends DirectorySocket {
 // nativa do WhatsApp). 'group': sai só do grupo onde o comando foi digitado.
 export type RemovalReach = 'community' | 'group'
 
-// Só o /ban persiste a decisão: o /kick é passageiro por definição (a pessoa pode voltar).
 export interface RemovalDeps {
 	directory: CommunityDirectory
 	reach: RemovalReach
-	denylist?: ModerationDenylist
-	now?: () => Date
 }
 
 // Domínio: view do escopo → autorização → alvo → guardrails → remoção.
 // A autorização vem ANTES da resolução do alvo porque é a view (o diretório da comunidade) que
 // traduz telefone → @lid; sem ela não há como resolver quem não está no grupo do comando.
-const removalDomain = ({ directory, reach, denylist, now = () => new Date() }: RemovalDeps) =>
+const removalDomain = ({ directory, reach }: RemovalDeps) =>
 	async ({ msg, cmd, groupJid, actor, sock, audit: baseAudit }: CommandContext<RemovalSocket>): Promise<void> => {
 		const view = await requireCommunityAdmin({ directory, groupJid, actor, audit: baseAudit })
 		if (!view) return // já auditou group_unknown / not_authorized / directory_error
@@ -49,6 +48,7 @@ const removalDomain = ({ directory, reach, denylist, now = () => new Date() }: R
 				target: target?.jid ?? null,
 				phone: target?.phone ?? null,
 				via: target?.via ?? null,
+				reason: target?.reason ?? null,
 				scope: view.scope,
 				community: view.communityJid,
 				...extra,
@@ -59,25 +59,19 @@ const removalDomain = ({ directory, reach, denylist, now = () => new Date() }: R
 			return
 		}
 
-		// grava a decisão de banir; a partir daqui a reentrada é barrada pelo enforcer.
-		const denylistEntry = () => ({
-			lid: target.jid,
-			phone: target.phone,
-			reason: target.reason,
-			by: actor,
-			at: now().toISOString(),
-			community: view.communityJid,
-		})
-
-		// número válido que não está em nenhum grupo: não há de onde remover, mas dá para deixar a
-		// armadilha armada — quando essa pessoa entrar, o enforcer a tira na hora.
+		// número parcial que casou com mais de um membro: agir seria um chute.
+		if (target.via === 'phone_ambiguous') {
+			audit('phone_ambiguous', { candidates: target.candidates })
+			return
+		}
+		// número parcial que não casou com ninguém: quase sempre erro de digitação.
+		if (target.via === 'phone_incomplete') {
+			audit('phone_incomplete')
+			return
+		}
+		// número completo que não está em nenhum grupo do escopo: não há de onde remover.
 		if (!target.jid) {
-			if (!denylist) {
-				audit('target_not_found')
-				return
-			}
-			denylist.add(denylistEntry())
-			audit('pre_banned')
+			audit('target_not_found')
 			return
 		}
 
@@ -105,10 +99,6 @@ const removalDomain = ({ directory, reach, denylist, now = () => new Date() }: R
 			return
 		}
 
-		// a denylist é gravada ANTES da chamada: a decisão de banir já foi tomada e autorizada, e uma
-		// recusa do WhatsApp (403) não pode fazer o registro do ban desaparecer.
-		if (denylist) denylist.add(denylistEntry())
-
 		// remoção — na comunidade é UMA chamada: linked_groups:true cascateia para todos os subgrupos.
 		const member = view.findByJid(target.jid)
 		const removeId = member?.rawId ?? target.jid
@@ -126,8 +116,6 @@ const removalDomain = ({ directory, reach, denylist, now = () => new Date() }: R
 				status,
 				reach: viaCommunity ? 'community' : 'group',
 				removedFrom: viaCommunity ? target.foundIn : [groupJid],
-				reason: target.reason,
-				denylisted: Boolean(denylist),
 			})
 		} catch (err) {
 			audit('remove_error', { err: String(err) })
@@ -141,8 +129,6 @@ export const createRemovalHandler = (deps: {
 	sock: RemovalSocket
 	logger: CommandLogger
 	directory?: CommunityDirectory
-	denylist?: ModerationDenylist
-	now?: () => Date
 	visibility?: CommandVisibility
 }) =>
 	createCommandHandler({
@@ -153,7 +139,5 @@ export const createRemovalHandler = (deps: {
 		domain: removalDomain({
 			directory: deps.directory ?? createCommunityDirectory({ sock: deps.sock }),
 			reach: deps.reach,
-			denylist: deps.denylist,
-			now: deps.now,
 		}),
 	})

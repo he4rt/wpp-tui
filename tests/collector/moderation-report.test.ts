@@ -37,6 +37,7 @@ test('prettyPhone: formata o que dá, devolve o resto com +', () => {
 test('relatório de ban executado traz tudo que o moderador precisa', () => {
 	const text = formatReport(
 		entry({
+			text: '/ban 5500900000001 spam de cripto',
 			fields: {
 				target: '100000000000004@lid',
 				phone: '5500900000001',
@@ -47,7 +48,6 @@ test('relatório de ban executado traz tudo que o moderador precisa', () => {
 				removedFrom: [MARKETING],
 				reason: 'spam de cripto',
 				status: '200',
-				denylisted: true,
 			},
 		}),
 		groupName,
@@ -59,12 +59,12 @@ test('relatório de ban executado traz tudo que o moderador precisa', () => {
 			'🔨 /ban · removed',
 			'grupo: Grupo Geral',
 			'por: Clinton · 100000000000001@lid',
+			'digitou: /ban 5500900000001 spam de cripto',
 			'alvo: +55 00 90000-0001 · 100000000000004@lid',
 			'identificado por: phone',
 			'saiu de: Grupo Secundário',
 			'alcance: comunidade Comunidade Exemplo',
 			'motivo: spam de cripto',
-			'denylist: registrado',
 			'comando apagado ✓',
 		].join('\n'),
 	)
@@ -96,32 +96,33 @@ test('relatório do /kick deixa claro que o alcance foi só o grupo', () => {
 	assert.match(text, /^saiu de: Grupo Geral$/m)
 })
 
-test('relatório do /unban mostra o ban que está sendo desfeito', () => {
-	const text = formatReport(
-		entry({
-			command: 'unban',
-			result: 'unbanned',
-			fields: { phone: '5500900000001', bannedBy: 'chefe@lid', bannedAt: '2026-08-18T13:17:59.895Z', bannedReason: 'spam' },
-		}),
-		groupName,
-	)
-	assert.match(text, /^🔓 \/unban · unbanned$/m)
-	assert.match(text, /ban original: chefe@lid em 2026-08-18T13:17:59.895Z — spam/)
-})
-
-test('relatório de reentrada mostra quem adicionou', () => {
-	const text = formatReport(
-		entry({ command: 'denylist', result: 'enforced', deleted: false, fields: { target: 'x@lid', addedBy: 'admin@lid', reach: 'community', community: COMMUNITY } }),
-		groupName,
-	)
-	assert.match(text, /^🔁 \/denylist · enforced$/m)
-	assert.match(text, /^adicionado por: admin@lid$/m)
-	assert.doesNotMatch(text, /comando apagado/)
-})
-
 test('resultado informativo usa ícone neutro', () => {
 	assert.match(formatReport(entry({ result: 'no_target', fields: {} }), groupName), /^ℹ️ /)
-	assert.match(formatReport(entry({ result: 'pre_banned', fields: {} }), groupName), /^🪤 /)
+	assert.match(formatReport(entry({ result: 'target_not_found', fields: {} }), groupName), /^ℹ️ /)
+})
+
+test('falha de infraestrutura usa ícone de alerta', () => {
+	for (const result of ['delete_error', 'metadata_error', 'handler_error']) {
+		assert.match(formatReport(entry({ result, fields: {} }), groupName), /^⚠️ /, result)
+	}
+})
+
+test('comando não apagado não vira linha no relatório', () => {
+	assert.doesNotMatch(formatReport(entry({ deleted: false, fields: {} }), groupName), /comando apagado/)
+})
+
+test('relatório do /admin diz o que o grupo virou, não só "applied"', () => {
+	const text = formatReport(
+		entry({ command: 'admin', result: 'applied', text: '/admin on', fields: { action: 'on', announceBefore: false, announceAfter: true } }),
+		groupName,
+	)
+	assert.match(text, /^⚙️ \/admin · applied$/m)
+	assert.match(text, /^somente admins falam: on \(off → on\)$/m)
+})
+
+test('relatório de tentativa sem alvo mostra o que foi digitado (é o que explica a recusa)', () => {
+	const text = formatReport(entry({ result: 'no_target', text: '/ban fulano', fields: {} }), groupName)
+	assert.match(text, /^digitou: \/ban fulano$/m)
 })
 
 test('JID de grupo sem nome conhecido aparece cru', () => {
