@@ -42,11 +42,8 @@ const adminDomain = async ({ msg, groupJid, actor, sock, audit: baseAudit, delet
 	const audit: typeof baseAudit = (result, extra = {}) => baseAudit(result, { action, ...extra })
 
 	if (!action) { audit('no_action'); return } // /admin sem on|off válido
-	const meta = await requireGroupAdmin<AdminGroupMetadata>({ sock, groupJid, actor, audit })
+	const meta = await requireGroupAdmin<AdminGroupMetadata>({ sock, groupJid, actor, audit, deleteCommand })
 	if (!meta) return // já auditou not_admin / metadata_error
-
-	// autorizado: só agora o comando sai da vista do grupo (ver command-handler.ts).
-	await deleteCommand()
 
 	// idempotência: se o grupo já está no estado alvo, não chama a API
 	const wantAnnounce = action === 'on'

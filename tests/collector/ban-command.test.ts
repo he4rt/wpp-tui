@@ -400,13 +400,26 @@ test('/ban de membro comum NÃO é apagado — o bot não mexe na mensagem de qu
 	assert.equal(h.last().text, `/ban ${VITIMA_PHONE}`, 'mas a tentativa fica registrada por inteiro')
 })
 
-test('/ban de admin de SUBGRUPO também não é apagado (não tem autoridade no topo)', async () => {
+test('/ban de admin de SUBGRUPO é apagado, embora recusado — moderação negada também não é pública', async () => {
 	const h = harness({ visibility: true })
 	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE}`, { from: ADMIN_SUB }))
 
-	assert.deepEqual(h.apagadas, [])
+	assert.deepEqual(h.apagadas, [{ jid: GENERAL, id: 'M1' }], 'tem galão de admin: a mensagem sai da vista')
+	assert.deepEqual(h.calls, [], 'mas o comando não age')
 	assert.equal(h.last().result, 'not_authorized')
 	assert.equal(h.last().groupAdmin, true)
+	assert.equal(h.last().deleted, true, 'apagar segue o status de quem digitou, não o veredito')
+})
+
+test('/ban de quem nem está no grupo não é apagado (não há status a proteger)', async () => {
+	const h = harness({ visibility: true })
+	// ADMIN_SUB é admin do Grupo Geral, mas não participa do Grupo Secundário
+	await h.handler.handle(upsert(`/ban ${VITIMA_PHONE}`, { from: ADMIN_SUB, group: MARKETING }))
+
+	assert.deepEqual(h.apagadas, [])
+	assert.equal(h.last().result, 'not_authorized')
+	assert.equal(h.last().groupAdmin, false)
+	assert.equal(h.last().member, false)
 })
 
 test('/ban autorizado com alvo inválido: apagado mesmo assim (quem mandou podia mandar)', async () => {

@@ -14,9 +14,11 @@ foi digitado), **`/admin on|off`** (liga/desliga "somente admins falam" no grupo
 mensagem "/ban 5500900000001 spam" num grupo
         │
         ▼
- autorização ──┬── passou ──► apaga a mensagem do grupo (fora dos grupos de admin)
-               │
-               └── não passou ──► mensagem INTACTA (o bot não mexe em quem não manda)
+ quem digitou é admin no grupo? ──┬── sim ──► apaga a mensagem (fora dos grupos de admin),
+        │                         │           mesmo que o comando seja recusado
+        │                         └── não ──► mensagem INTACTA
+        ▼
+ o comando age (ou é recusado)
         │
         ├──► journal (pino)              ──► journalctl --user -u whatsapp-collector
         │    1 linha JSON por tentativa       (ou wa-logs.txt no Modo TUI)
@@ -25,10 +27,10 @@ mensagem "/ban 5500900000001 spam" num grupo
              (no-op se a env não existir)
 ```
 
-**Apagar é privilégio de comando legítimo.** Só o comando de quem passou pela autorização sai da
-vista do grupo — moderação não vira assunto público. A tentativa de quem não tem poder nenhum fica
-onde está: o bot não apaga a mensagem de quem não fez nada de errado, e o que houve vive aqui na
-trilha, não no silêncio.
+**Apagar segue o status de quem digitou, não o veredito do comando.** Quem tem galão de admin no
+grupo — da comunidade ou só daquele subgrupo — tem a mensagem apagada inclusive quando o comando é
+recusado: moderação, ainda que negada, não é assunto público. Já a mensagem de quem não é admin fica
+onde está — o bot não mexe em quem não manda, e o que houve vive aqui na trilha, não no silêncio.
 
 Toda **tentativa** entra nas duas — inclusive as negadas, as recusadas pelo WhatsApp e as que nem
 tinham alvo. O relatório é o que o moderador lê; o journal é o que o operador consulta quando o

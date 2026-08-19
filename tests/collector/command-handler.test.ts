@@ -174,6 +174,16 @@ test('requireGroupAdmin: autor que nem está na metadata → not_admin com membe
 	assert.equal(logs.at(-1)?.extra.member, false)
 })
 
+test('requireGroupAdmin: apagar segue o status — admin apaga, não-admin não', async () => {
+	for (const [admin, esperado] of [['admin', 1], [null, 0]] as const) {
+		const { audit } = auditSpy()
+		let apagou = 0
+		const sock = { groupMetadata: async () => ({ id: GROUP, participants: [{ id: ACTOR, admin }] }) }
+		await requireGroupAdmin({ sock, groupJid: GROUP, actor: ACTOR, audit, deleteCommand: async () => { apagou++ } })
+		assert.equal(apagou, esperado, `admin=${admin}`)
+	}
+})
+
 test('requireGroupAdmin: autor admin → retorna a meta, sem auditar', async () => {
 	const { logs, audit } = auditSpy()
 	const expected = { id: GROUP, participants: [{ id: ACTOR, admin: 'admin' as const }] }

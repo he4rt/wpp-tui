@@ -99,10 +99,13 @@ export function createCommandHandler<S>(deps: {
 						text: text.slice(0, MAX_TEXT),
 					}
 
-					// Apagar é privilégio de comando LEGÍTIMO: quem manda apagar é o domínio, logo
-					// depois de a autorização passar. A tentativa de quem NÃO pode moderar fica
-					// visível no grupo — o bot não mexe na mensagem de quem não tem poder nenhum,
-					// e o que aconteceu vive na trilha de auditoria, não no silêncio.
+					// Apagar segue o STATUS de quem digitou, não o veredito do comando: quem tem
+					// galão de admin no grupo tem a mensagem apagada mesmo com o comando recusado
+					// (moderação, ainda que negada, não é assunto público). Já a mensagem de quem
+					// não tem poder nenhum fica intacta — o bot não mexe em quem não manda, e o que
+					// houve vive na trilha de auditoria, não no silêncio.
+					// Quem dispara é a autorização (requireGroupAdmin / requireCommunityAdmin), que
+					// é onde o status de admin é descoberto.
 					let deleted = false
 					// por que NÃO foi apagado, quando não foi: `deleted: false` sozinho é ambíguo
 					// (sala de admin? env não configurada? o revoke falhou? não era autorizado?).
@@ -137,8 +140,9 @@ export function createCommandHandler<S>(deps: {
 						}
 					}
 
-					// `not_authorized` cobre também o comando que parou ANTES da autorização (entrada
-					// inválida, grupo desconhecido, erro de metadata) — o `result` da linha desambigua.
+					// `not_authorized` cobre o comando de quem não tem status de admin e também o que
+					// parou ANTES da autorização (entrada inválida, grupo desconhecido, erro de
+					// metadata) — o `result` da linha desambigua qual dos casos foi.
 					const deleteState = () => {
 						if (!visibility) return {} // sem grupos de admin configurados nada é apagado
 						if (deleted) return { deleted: true }
@@ -202,6 +206,8 @@ export async function requireGroupAdmin<M extends { participants: CmdParticipant
 	groupJid: string
 	actor: string
 	audit: Audit
+	// chamado quando o autor tem status de admin no grupo, ANTES de auditar o veredito.
+	deleteCommand?: () => Promise<void>
 }): Promise<M | null> {
 	const { sock, groupJid, actor, audit } = deps
 	let meta: M
@@ -218,6 +224,7 @@ export async function requireGroupAdmin<M extends { participants: CmdParticipant
 		audit('not_admin', { member: Boolean(me) })
 		return null
 	}
+	await deps.deleteCommand?.()
 	return meta
 }
 
@@ -231,6 +238,9 @@ export async function requireCommunityAdmin(deps: {
 	groupJid: string
 	actor: string
 	audit: Audit
+	// chamado quando o autor tem status de admin (da comunidade OU do grupo do comando), ANTES de
+	// auditar o veredito: um admin de subgrupo recusado ainda tem a mensagem apagada.
+	deleteCommand?: () => Promise<void>
 }): Promise<CommunityView | null> {
 	const { directory, groupJid, actor, audit } = deps
 
@@ -245,14 +255,21 @@ export async function requireCommunityAdmin(deps: {
 		audit('group_unknown')
 		return null
 	}
-	if (!view.admins.has(actor)) {
-		// A recusa mais comum na prática é admin de SUBGRUPO comandando algo de comunidade. Registrar
-		// `groupAdmin` distingue isso de membro comum sondando o bot — são conversas diferentes.
-		const inGroup = (view.group.participants || []).find((p) => jidNormalizedUser(p.id) === actor)
+
+	const authorized = view.admins.has(actor)
+	// A recusa mais comum na prática é admin de SUBGRUPO comandando algo de comunidade. Registrar
+	// `groupAdmin` distingue isso de membro comum sondando o bot — são conversas diferentes, e é
+	// também o que decide se a mensagem é apagada.
+	const inGroup = (view.group.participants || []).find((p) => jidNormalizedUser(p.id) === actor)
+	const groupAdmin = isAdmin(inGroup)
+
+	if (authorized || groupAdmin) await deps.deleteCommand?.()
+
+	if (!authorized) {
 		audit('not_authorized', {
 			scope: view.scope,
 			community: view.communityJid,
-			groupAdmin: isAdmin(inGroup),
+			groupAdmin,
 			member: Boolean(inGroup),
 		})
 		return null

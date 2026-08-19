@@ -5,9 +5,10 @@
 //  - LOG_GROUP_JID: onde cai o relatório de toda tentativa de comando.
 //
 // Nos dois, o comando digitado é preservado — são espaços fechados, o histórico ali é a trilha.
-// Em qualquer OUTRO grupo o comando de quem TEM autorização é apagado, para que a moderação não
-// vire assunto público. Quem não tem autorização não é tocado: a mensagem dele fica onde está e o
-// registro vai para a trilha de auditoria (decisão de 2026-08-19 — antes apagava de todo mundo).
+// Em qualquer OUTRO grupo apaga-se o comando de quem tem STATUS DE ADMIN no grupo, inclusive quando
+// o comando é recusado (moderação, ainda que negada, não é assunto público). A mensagem de quem não
+// tem galão nenhum fica onde está — o registro dela vive na trilha de auditoria.
+// Decisão de 2026-08-19: antes apagava de todo mundo, autorizado ou não.
 //
 // A spec do /ban (2026-06-30) marcava "configuração via env" como fora de escopo. O caso de uso do
 // grupo de log reverte isso deliberadamente: não há como referenciar um grupo específico sem

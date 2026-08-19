@@ -37,12 +37,10 @@ export interface RemovalDeps {
 // traduz telefone → @lid; sem ela não há como resolver quem não está no grupo do comando.
 const removalDomain = ({ directory, reach }: RemovalDeps) =>
 	async ({ msg, cmd, groupJid, actor, sock, audit: baseAudit, deleteCommand }: CommandContext<RemovalSocket>): Promise<void> => {
-		const view = await requireCommunityAdmin({ directory, groupJid, actor, audit: baseAudit })
+		// o deleteCommand vai para a autorização: é lá que se sabe se quem digitou tem status de
+		// admin — o critério do apagar (ver command-handler.ts), que não é o mesmo do veredito.
+		const view = await requireCommunityAdmin({ directory, groupJid, actor, audit: baseAudit, deleteCommand })
 		if (!view) return // já auditou group_unknown / not_authorized / directory_error
-
-		// autorizado: a partir daqui o comando é legítimo e sai da vista do grupo. A tentativa de
-		// quem NÃO passou por aqui fica onde está — o bot não apaga mensagem de quem não manda.
-		await deleteCommand()
 
 		const target = resolveTarget(msg, cmd, view)
 		// todo log carrega o alvo e o escopo: embrulha o audit base uma vez, e só o wrapper
