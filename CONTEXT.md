@@ -45,7 +45,7 @@ O efeito dos comandos `/ban` e `/kick`: tirar alguém de grupo(s). É um **ato, 
 _Avoid_: ban permanente, blocklist (o `updateBlockStatus` do WhatsApp é outra coisa e não impede entrar em grupo); quem volta pelo link entra, e o controle é o convite.
 
 **Trilha de auditoria de moderação**:
-O registro de toda tentativa de **Comando de moderação** — executada, negada ou recusada pelo WhatsApp. Sai em duas vias com o mesmo conteúdo: o **journal** do servidor (pino, uma linha por tentativa, com `component` do comando) e o **relatório** no grupo de log (`LOG_GROUP_JID`, legível por humano). É a única memória do que a moderação fez.
+O registro de todo ato de moderação: toda tentativa de **Comando de moderação** — executada, negada ou recusada pelo WhatsApp — e todo **apagamento de mensagem de terceiro** (que não passa por comando). Sai em duas vias com o mesmo conteúdo: o **journal** do servidor (pino, uma linha por tentativa, com `component` do comando) e o **relatório** no grupo de log (`LOG_GROUP_JID`, legível por humano). É a única memória do que a moderação fez.
 _Avoid_: log de eventos (`logs/<evento>/<dia>.json` é a trilha crua do Baileys, outra coisa).
 Campos, resultados e consultas: [`docs/auditoria-de-comandos.md`](docs/auditoria-de-comandos.md).
 

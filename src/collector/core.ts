@@ -20,7 +20,9 @@ import { createKickHandler } from './kick-command.js'
 import { createAdminHandler } from './admin-command.js'
 import { createCommunityDirectory } from './community-directory.js'
 import { resolveModerationConfig, type ModerationConfig } from './moderation-config.js'
-import { createModerationReporter } from './moderation-report.js'
+import { createModerationReporter, createLogGroupPublisher } from './moderation-report.js'
+import { createMessageLookup } from './message-lookup.js'
+import { createDeletionWatcher } from './deletion-watcher.js'
 import { startWebhookSender } from './webhook-sender.js'
 import { startHeartbeat } from './heartbeat.js'
 import type { ConnectionStatus, GroupInfo } from '../types.js'
@@ -207,6 +209,21 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 		})
 		const visibility = { config: moderationConfig, deleter: activeSock, reporter, groupName }
 
+		// apagamento de mensagem de terceiro (moderação sem comando): quem apagou, de quem era e o
+		// que dizia. O conteúdo sai da trilha crua que o coletor já grava — o evento não o traz.
+		const deletionWatcher = createDeletionWatcher({
+			logger: deps.logger.child({ component: 'deletion' }),
+			lookup: createMessageLookup(),
+			groupName,
+			// o bot apagando o comando de um moderador já é auditado como comando; não repetir aqui.
+			self: () => [activeSock.user?.id, (activeSock.user as { lid?: string } | undefined)?.lid],
+			publisher: createLogGroupPublisher({
+				sock: activeSock,
+				logGroupJid: moderationConfig.logGroupJid,
+				onError: (err) => moderationLog.warn({ err: String(err) }, 'moderação: falha ao publicar apagamento no grupo de log'),
+			}),
+		})
+
 		// handler do comando /ban — usa o socket ativo; silencioso, erros vão pro log de auditoria.
 		const banHandler = createBanHandler({
 			sock: activeSock,
@@ -244,6 +261,11 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 			// de decidir sobre uma lista de participantes vencida (o refetch é lazy — só na consulta).
 			if (events['group-participants.update'] || events['groups.update']) {
 				directory.invalidate()
+			}
+
+			// mensagem apagada por outra pessoa: registro de moderação sem comando.
+			if (events['messages.update']) {
+				void deletionWatcher.handle(events['messages.update'] as Parameters<typeof deletionWatcher.handle>[0])
 			}
 
 			// comandos de moderação: best-effort, não bloqueiam nem derrubam a coleta (handlers nunca lançam).

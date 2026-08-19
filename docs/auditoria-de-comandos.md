@@ -126,6 +126,36 @@ No sucesso entram também `status` (resposta do WhatsApp), `reach` (`community`/
 | `delete_error` | não deu para apagar a mensagem do comando (bot sem admin no grupo). Vai ao journal **e** ao grupo de log |
 | `handler_error` | exceção inesperada; carrega `command`, `group`, `actor`, `messageId` e `err` |
 
+## Mensagem apagada por outra pessoa
+
+Nem toda moderação passa por comando: um admin apagar a mensagem de um membro é ato de moderação e
+não deixava rastro nenhum — o conteúdo saía do grupo e ninguém mais sabia o que havia sido dito nem
+quem tirou. O gancho é o `messages.update` com `messageStubType: 1` (`REVOKE`), que traz as duas
+pontas: `key.participant` é o autor da mensagem e `update.key.participant` é quem apagou.
+
+| Campo | Significado |
+|---|---|
+| `event` | sempre `message_deleted` (não é comando, não tem `result`) |
+| `deletedBy` | quem apagou |
+| `author` / `authorName` | de quem era a mensagem (nome vem do log da mensagem original) |
+| `group` / `groupName` | onde |
+| `messageId` | id da mensagem apagada |
+| `sentAt` | quando a mensagem apagada havia sido enviada |
+| `kind` | o que era: `conversation`, `imageMessage`, `audioMessage`… |
+| `text` | o conteúdo apagado, truncado em 300 chars |
+| `recovered` | o conteúdo foi encontrado na trilha crua? |
+
+O conteúdo **não vem no evento** — é recuperado de `logs/messages.upsert/<dia>.json` pelo id,
+varrendo até 3 dias para trás. Se o log já foi podado (`LOG_RETENTION_DAYS`), o registro sai com
+`recovered: false`: ainda diz quem apagou o quê de quem, sem o teor.
+
+Dois casos **não** entram na trilha, deliberadamente:
+
+- **quem apaga a própria mensagem** — é arrependimento, não moderação; vigiar isso transformaria a
+  trilha em vigilância de conversa;
+- **o apagamento que o próprio bot faz** ao esconder um comando de moderação — aquilo já é auditado
+  como comando, e registrar de novo duplicaria cada `/ban`.
+
 ## Como consultar
 
 ```bash
@@ -141,6 +171,10 @@ journalctl --user -u whatsapp-collector -o cat | jq -c 'select(.actor=="10000000
 
 # a mensagem crua do comando, pelo messageId do log
 grep '"CMD_ID_AQUI"' logs/messages.upsert/2026-08-19.json | jq .
+
+# mensagens apagadas por admins hoje
+journalctl --user -u whatsapp-collector --since today -o cat \
+  | jq -c 'select(.event=="message_deleted") | {deletedBy,author:.authorName,groupName,text}'
 ```
 
 ## Limites conhecidos
