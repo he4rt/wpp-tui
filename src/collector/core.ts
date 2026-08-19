@@ -139,6 +139,12 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 
 	let stopped = false
 	let sock: ReturnType<typeof makeWASocketReal> | null = null
+	// aponta pro connect() em voo mais recente (inicial ou reconexão via 'close'). stop() espera essa
+	// promise antes de terminar — sem isso, um connect() já passado dos awaits de auth/versão no
+	// momento do stop() ainda abriria socket e registraria handlers depois que o chamador já
+	// considerava o coletor parado (produção: reconecta ao WhatsApp mesmo "parado"; testes: o
+	// connect() de um caso que já terminou seguia mexendo no mesmo authDir do caso seguinte).
+	let connectPromise: Promise<void> = Promise.resolve()
 
 	async function fetchGroupsMetadata(activeSock: ReturnType<typeof makeWASocketReal>) {
 		const cache = loadGroupCache()
@@ -175,6 +181,11 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 		const { state, saveCreds } = await useMultiFileAuthState(authDir)
 
 		const { version } = await fetchLatestBaileysVersion()
+
+		// stop() pode ter sido chamado enquanto ainda esperávamos o auth state / a versão mais
+		// recente — sem este guard o connect() abandonado abriria socket e registraria ev.process
+		// mesmo assim, "reconectando" depois que o coletor já era pra estar parado.
+		if (stopped) return
 
 		const activeSock = makeSocket({
 			version,
@@ -324,7 +335,7 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 						}
 					}
 					deps.onStatus?.('connecting')
-					connect()
+					connectPromise = connect()
 				}
 				if (qr) {
 					deps.onQr?.(qr)
@@ -333,7 +344,7 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 		})
 	}
 
-	connect()
+	connectPromise = connect()
 
 	return {
 		async stop() {
@@ -341,6 +352,10 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 			stopSender()
 			stopHeartbeat()
 			stopRetention()
+			// espera o connect() em voo terminar (ou abortar pelo guard acima) antes de fechar outbox
+			// e encerrar o socket — sem isso, stop() "concluía" enquanto uma conexão/reconexão ainda
+			// em andamento seguia criando authDir/socket por trás.
+			await connectPromise.catch(() => {})
 			outbox?.close()
 			sock?.end(undefined)
 		},
