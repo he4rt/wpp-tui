@@ -1,6 +1,6 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { parseCommand, messageText, isAdmin } from '../../src/collector/command-core.js'
+import { parseCommand, messageText, isAdmin, sentAtIso } from '../../src/collector/command-core.js'
 import type { CmdMessage } from '../../src/collector/command-core.js'
 
 test('parseCommand: aceita prefixo / e !, normaliza nome e args', () => {
@@ -35,4 +35,16 @@ test('isAdmin: admin/superadmin true; resto false', () => {
 	assert.equal(isAdmin({ admin: 'superadmin' }), true)
 	assert.equal(isAdmin({ admin: null }), false)
 	assert.equal(isAdmin(undefined), false)
+})
+
+test('sentAtIso: converte segundos UNIX (number e Long do protobuf)', () => {
+	assert.equal(sentAtIso({ messageTimestamp: 1_756_000_000 }), '2025-08-24T01:46:40.000Z')
+	assert.equal(sentAtIso({ messageTimestamp: { toNumber: () => 1_756_000_000 } }), '2025-08-24T01:46:40.000Z')
+})
+
+test('sentAtIso: sem timestamp utilizável devolve null (não inventa horário)', () => {
+	assert.equal(sentAtIso({}), null)
+	assert.equal(sentAtIso({ messageTimestamp: null }), null)
+	assert.equal(sentAtIso({ messageTimestamp: 0 }), null)
+	assert.equal(sentAtIso({ messageTimestamp: { toNumber: () => NaN } }), null)
 })

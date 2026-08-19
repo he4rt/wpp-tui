@@ -3,6 +3,12 @@
 // o único feedback é a mensagem de sistema nativa do WhatsApp. Toda tentativa é auditada via log.
 // Escopo: só o grupo onde o comando foi digitado (sem cascata pra comunidade).
 // A casca (loop best-effort, guarda de grupo/notify, audit, autorização) vem de command-handler.
+//
+// AUTORIZAÇÃO — a diferença para /ban e /kick é DELIBERADA, não esquecimento:
+// aqueles exigem admin da COMUNIDADE porque alcançam a comunidade inteira; este exige admin do
+// próprio GRUPO (requireGroupAdmin) porque o efeito não sai dele — é a mesma configuração que o
+// admin já pode mudar pelo menu do WhatsApp, e negá-la por comando não protegeria nada.
+// Decisão tomada em 2026-08-19; não "uniformizar" sem rever isso.
 
 import { messageText, parseCommand, type CmdParticipant } from './command-core.js'
 import { createCommandHandler, requireGroupAdmin, type CommandContext, type CommandLogger, type CommandVisibility } from './command-handler.js'
@@ -29,28 +35,30 @@ export interface AdminSocket {
 
 // Domínio do /admin: resolve on/off (entrada) → autoriza → idempotência → troca o setting. A ordem
 // entrada→auth é preservada porque requireGroupAdmin é chamado só depois de validar o argumento.
-const adminDomain = async ({ msg, groupJid, actor, sock, audit: baseAudit }: CommandContext<AdminSocket>): Promise<void> => {
+const adminDomain = async ({ msg, groupJid, actor, sock, audit: baseAudit, deleteCommand }: CommandContext<AdminSocket>): Promise<void> => {
 	const action = parseAdminAction(messageText(msg))
 	// o audit do admin carrega `action` em todo log (como antes): embrulha o audit base uma vez.
 	// só o wrapper enriquecido fica em escopo (chama-se `audit`) — impossível logar sem o `action`.
 	const audit: typeof baseAudit = (result, extra = {}) => baseAudit(result, { action, ...extra })
 
 	if (!action) { audit('no_action'); return } // /admin sem on|off válido
-	const meta = await requireGroupAdmin<AdminGroupMetadata>({ sock, groupJid, actor, audit })
+	const meta = await requireGroupAdmin<AdminGroupMetadata>({ sock, groupJid, actor, audit, deleteCommand })
 	if (!meta) return // já auditou not_admin / metadata_error
 
 	// idempotência: se o grupo já está no estado alvo, não chama a API
 	const wantAnnounce = action === 'on'
-	if (Boolean(meta.announce) === wantAnnounce) {
-		audit(wantAnnounce ? 'already_on' : 'already_off'); return
+	const announceBefore = Boolean(meta.announce)
+	if (announceBefore === wantAnnounce) {
+		audit(wantAnnounce ? 'already_on' : 'already_off', { announceBefore }); return
 	}
 
-	// aplica o setting no grupo
+	// aplica o setting no grupo. O log carrega o estado ANTES e DEPOIS: `applied` sozinho não diz o
+	// que o grupo virou, e "quem fechou o grupo ontem?" é a pergunta que a trilha precisa responder.
 	try {
 		await sock.groupSettingUpdate(groupJid, wantAnnounce ? 'announcement' : 'not_announcement')
-		audit('applied')
+		audit('applied', { announceBefore, announceAfter: wantAnnounce })
 	} catch (err) {
-		audit('setting_error', { err: String(err) })
+		audit('setting_error', { err: String(err), announceBefore })
 	}
 }
 

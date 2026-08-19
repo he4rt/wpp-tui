@@ -102,6 +102,10 @@ test('handler: on aplica announcement', async () => {
 	await h.handle(adminUpsert({ text: '!admin on' }))
 	assert.deepEqual(calls, [{ jid: GROUP, setting: 'announcement' }])
 	assert.equal(logs.at(-1)?.result, 'applied')
+	// "applied" sozinho não diz o que o grupo virou
+	assert.equal(logs.at(-1)?.action, 'on')
+	assert.equal(logs.at(-1)?.announceBefore, false)
+	assert.equal(logs.at(-1)?.announceAfter, true)
 })
 
 test('handler: off aplica not_announcement', async () => {
@@ -111,6 +115,8 @@ test('handler: off aplica not_announcement', async () => {
 	await h.handle(adminUpsert({ text: '/admin off' }))
 	assert.deepEqual(calls, [{ jid: GROUP, setting: 'not_announcement' }])
 	assert.equal(logs.at(-1)?.result, 'applied')
+	assert.equal(logs.at(-1)?.announceBefore, true)
+	assert.equal(logs.at(-1)?.announceAfter, false)
 })
 
 test('handler: on num grupo já announce → already_on, sem chamada', async () => {
@@ -120,6 +126,7 @@ test('handler: on num grupo já announce → already_on, sem chamada', async () 
 	await h.handle(adminUpsert({ text: '/admin on' }))
 	assert.equal(calls.length, 0)
 	assert.equal(logs.at(-1)?.result, 'already_on')
+	assert.equal(logs.at(-1)?.announceBefore, true)
 })
 
 test('handler: off num grupo já liberado → already_off, sem chamada', async () => {
@@ -145,4 +152,61 @@ test('handler: groupSettingUpdate falha → setting_error, sem lançar', async (
 	const h = createAdminHandler({ sock, logger })
 	await h.handle(adminUpsert({ text: '/admin on' }))
 	assert.equal(logs.at(-1)?.result, 'setting_error')
+})
+
+// ---- apagar o comando é privilégio de quem tem autorização ----
+
+const MODERACAO = '120363000000000005@g.us'
+
+// visibility com deleter espião: registra o que seria revogado no grupo.
+function espiao() {
+	const apagadas: Array<{ jid: string; id?: string | null }> = []
+	const visibility = {
+		config: { moderationGroupJid: MODERACAO, logGroupJid: null },
+		deleter: {
+			async sendMessage(jid: string, content: { delete: { id?: string | null } }) {
+				apagadas.push({ jid, id: content.delete?.id })
+				return {}
+			},
+		},
+		reporter: { async publish() {} },
+	}
+	return { apagadas, visibility }
+}
+
+test('/admin de admin do grupo é apagado', async () => {
+	const { sock } = fakeSock({ announce: false, participants: ADMIN_MEMBER })
+	const { logs, logger } = fakeLogger()
+	const { apagadas, visibility } = espiao()
+	const h = createAdminHandler({ sock, logger, visibility })
+	await h.handle(adminUpsert({ text: '/admin on' }))
+
+	assert.deepEqual(apagadas, [{ jid: GROUP, id: 'CMD1' }])
+	assert.equal(logs.at(-1)?.result, 'applied')
+	assert.equal(logs.at(-1)?.deleted, true)
+})
+
+test('/admin de quem não é admin NÃO é apagado, mas fica registrado', async () => {
+	const { sock } = fakeSock({ announce: false, participants: ADMIN_MEMBER })
+	const { logs, logger } = fakeLogger()
+	const { apagadas, visibility } = espiao()
+	const h = createAdminHandler({ sock, logger, visibility })
+	await h.handle(adminUpsert({ text: '/admin on', actor: MEMBER }))
+
+	assert.deepEqual(apagadas, [])
+	assert.equal(logs.at(-1)?.result, 'not_admin')
+	assert.equal(logs.at(-1)?.deleteSkip, 'not_authorized')
+	assert.equal(logs.at(-1)?.text, '/admin on')
+})
+
+test('/admin sem on|off não é apagado: para antes da autorização, então não se sabe quem mandou', async () => {
+	const { sock, calls } = fakeSock({ participants: ADMIN_MEMBER })
+	const { logs, logger } = fakeLogger()
+	const { apagadas, visibility } = espiao()
+	const h = createAdminHandler({ sock, logger, visibility })
+	await h.handle(adminUpsert({ text: '/admin fechar' }))
+
+	assert.deepEqual(apagadas, [])
+	assert.equal(calls.length, 0, 'nem gasta chamada de metadata — evita abuso por repetição')
+	assert.equal(logs.at(-1)?.result, 'no_action')
 })
