@@ -7,7 +7,7 @@
 // comando e o alcance de COMUNIDADE.
 
 import { messageText, parseCommand, type CmdMessage } from './command-core.js'
-import type { CommandLogger } from './command-handler.js'
+import type { CommandLogger, CommandVisibility } from './command-handler.js'
 import type { CommunityDirectory } from './community-directory.js'
 import type { ModerationDenylist } from './moderation-denylist.js'
 import { createRemovalHandler, type RemovalSocket, type RemovalUpdateResult } from './removal-command.js'
@@ -29,4 +29,5 @@ export const createBanHandler = (deps: {
 	directory?: CommunityDirectory
 	denylist?: ModerationDenylist // sem ela o /ban vira remoção simples: a reentrada não é barrada
 	now?: () => Date
+	visibility?: CommandVisibility
 }) => createRemovalHandler({ name: 'ban', reach: 'community', ...deps })

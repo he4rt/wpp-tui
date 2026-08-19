@@ -4,11 +4,26 @@
 // audit (createCommandHandler), mais o par metadata + autorização de admin (requireGroupAdmin).
 
 import { jidNormalizedUser } from '@whiskeysockets/baileys'
-import { messageText, parseCommand, isAdmin, type CmdMessage, type CmdParticipant, type CmdUpsert, type ParsedCommand } from './command-core.js'
+import { messageText, parseCommand, isAdmin, type CmdMessage, type CmdMessageKey, type CmdParticipant, type CmdUpsert, type ParsedCommand } from './command-core.js'
 import type { CommunityDirectory, CommunityView } from './community-directory.js'
+import { shouldDeleteCommand, type ModerationConfig } from './moderation-config.js'
+import type { ModerationReporter } from './moderation-report.js'
 
 export interface CommandLogger {
 	info(obj: Record<string, unknown>, msg?: string): void
+}
+
+// Socket mínimo para revogar a mensagem do comando (o mesmo sendMessage já usado pelo reporter).
+export interface CommandDeleter {
+	sendMessage(jid: string, content: { delete: CmdMessageKey }): Promise<unknown>
+}
+
+// Ligação com os grupos privados de admin: onde não apagar e para onde reportar.
+// Ausente → comportamento de antes (nada apagado, nada publicado; só o journal).
+export interface CommandVisibility {
+	config: ModerationConfig
+	deleter: CommandDeleter
+	reporter: ModerationReporter
 }
 
 // audit(result, extra?): registra uma tentativa. A casca injeta { actor, group }; cada comando pode
@@ -33,8 +48,9 @@ export function createCommandHandler<S>(deps: {
 	sock: S
 	logger: CommandLogger
 	domain: (ctx: CommandContext<S>) => Promise<void>
+	visibility?: CommandVisibility
 }) {
-	const { name, sock, logger, domain } = deps
+	const { name, sock, logger, domain, visibility } = deps
 	return {
 		async handle(upsert: CmdUpsert): Promise<void> {
 			if (upsert?.type !== 'notify') return
@@ -45,8 +61,36 @@ export function createCommandHandler<S>(deps: {
 					const cmd = parseCommand(messageText(msg))
 					if (cmd?.name !== name) continue // é o meu comando? (/ e !)
 					const actor = msg.key?.participant ? jidNormalizedUser(msg.key.participant) : ''
-					const audit: Audit = (result, extra = {}) =>
-						logger.info({ actor, group: groupJid, result, ...extra }, `${name}: tentativa`)
+
+					// apaga ANTES de decidir qualquer coisa: vale para comando autorizado e para
+					// tentativa de membro comum. Quem não pode moderar nem descobre que os comandos
+					// existem — a mensagem some sem nenhuma resposta.
+					let deleted = false
+					if (visibility && shouldDeleteCommand(visibility.config, groupJid)) {
+						try {
+							await visibility.deleter.sendMessage(groupJid, { delete: msg.key ?? {} })
+							deleted = true
+						} catch (err) {
+							logger.info({ actor, group: groupJid, result: 'delete_error', err: String(err) }, `${name}: falha ao apagar o comando`)
+						}
+					}
+
+					const audit: Audit = (result, extra = {}) => {
+						// `deleted` só aparece quando há visibilidade configurada — sem os grupos privados
+						// definidos nada é apagado, e um campo fixo em false seria só ruído no journal.
+						logger.info({ actor, group: groupJid, result, ...(visibility ? { deleted } : {}), ...extra }, `${name}: tentativa`)
+						// mesmo conteúdo no grupo de log; falha ali não afeta o comando (fire-and-forget).
+						void visibility?.reporter.publish({
+							command: name,
+							result,
+							group: groupJid,
+							actor,
+							actorName: msg.pushName ?? null,
+							deleted,
+							fields: extra,
+						})
+					}
+
 					await domain({ msg, cmd, groupJid, actor, sock, audit })
 				} catch (err) {
 					logger.info({ result: 'handler_error', err: String(err) }, `${name}: erro inesperado`)
