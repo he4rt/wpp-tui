@@ -53,6 +53,13 @@ export interface CollectorCoreHandle {
 
 const msgRetryCounterCache = new NodeCache() as CacheStore
 
+// Teto da espera do stop() pelo connect() em voo. O connect() contém uma chamada HTTP
+// (fetchLatestBaileysVersion) que numa rede ruim fica pendurada — e o stop() não pode ficar preso
+// atrás dela, porque é depois dele que o outbox é fechado (checkpoint do WAL do SQLite). Sem este
+// teto, um restart durante reconexão cairia no forceMs do shutdown (saída com código 1) sem nunca
+// fechar o outbox. Em teste o connect() resolve em milissegundos: quem ganha a corrida é a promise.
+const STOP_CONNECT_WAIT_MS = 2_000
+
 // converte a metadata crua do baileys no shape persistido em cache (group-metadata.json).
 function toGroupInfo(meta: import('@whiskeysockets/baileys').GroupMetadata): GroupInfo {
 	return {
@@ -138,6 +145,12 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 
 	let stopped = false
 	let sock: ReturnType<typeof makeWASocketReal> | null = null
+	// aponta pro connect() em voo mais recente (inicial ou reconexão via 'close'). stop() espera essa
+	// promise antes de terminar — sem isso, um connect() já passado dos awaits de auth/versão no
+	// momento do stop() ainda abriria socket e registraria handlers depois que o chamador já
+	// considerava o coletor parado (produção: reconecta ao WhatsApp mesmo "parado"; testes: o
+	// connect() de um caso que já terminou seguia mexendo no mesmo authDir do caso seguinte).
+	let connectPromise: Promise<void> = Promise.resolve()
 
 	async function fetchGroupsMetadata(activeSock: ReturnType<typeof makeWASocketReal>) {
 		const cache = loadGroupCache()
@@ -174,6 +187,11 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 		const { state, saveCreds } = await useMultiFileAuthState(authDir)
 
 		const { version } = await fetchLatestBaileysVersion()
+
+		// stop() pode ter sido chamado enquanto ainda esperávamos o auth state / a versão mais
+		// recente — sem este guard o connect() abandonado abriria socket e registraria ev.process
+		// mesmo assim, "reconectando" depois que o coletor já era pra estar parado.
+		if (stopped) return
 
 		const activeSock = makeSocket({
 			version,
@@ -307,7 +325,7 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 						}
 					}
 					deps.onStatus?.('connecting')
-					connect()
+					connectPromise = connect()
 				}
 				if (qr) {
 					deps.onQr?.(qr)
@@ -316,7 +334,7 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 		})
 	}
 
-	connect()
+	connectPromise = connect()
 
 	return {
 		async stop() {
@@ -324,6 +342,16 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 			stopSender()
 			stopHeartbeat()
 			stopRetention()
+			// espera o connect() em voo terminar (ou abortar pelo guard acima) antes de fechar outbox
+			// e encerrar o socket — sem isso, stop() "concluía" enquanto uma conexão/reconexão ainda
+			// em andamento seguia criando authDir/socket por trás. Com teto: ver STOP_CONNECT_WAIT_MS.
+			await Promise.race([
+				connectPromise.catch(() => {}),
+				new Promise<void>((resolve) => {
+					const timer = setTimeout(resolve, STOP_CONNECT_WAIT_MS)
+					timer.unref?.()
+				}),
+			])
 			outbox?.close()
 			sock?.end(undefined)
 		},

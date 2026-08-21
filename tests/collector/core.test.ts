@@ -78,8 +78,9 @@ function makeFakeSocket(opts: {
 	}
 	// emit: dispara o loop de ev.process com o lote de eventos informado.
 	const emit = async (events: Record<string, unknown>) => {
-		// connect() é async (await useMultiFileAuthState + fetchLatestBaileysVersion); damos uns ticks.
-		for (let i = 0; i < 100 && !processCb; i++) await new Promise((r) => setImmediate(r))
+		// connect() é async (await useMultiFileAuthState + fetchLatestBaileysVersion) — espera por
+		// tempo real, não por ticks (ver waitUntil).
+		await waitUntil(() => processCb !== null)
 		assert.ok(processCb, 'ev.process não foi registrado')
 		await processCb!(events)
 	}
@@ -90,11 +91,35 @@ const makeFakeMakeSocket = (sock: any) => (() => sock) as any
 
 const flush = async (n = 4) => { for (let i = 0; i < n; i++) await new Promise((r) => setImmediate(r)) }
 
+// espera até `cond()` virar true, por até `timeoutMs` de tempo REAL (não um número fixo de voltas
+// do event loop). connect() faz I/O de disco de verdade (useMultiFileAuthState: stat/mkdir/readFile
+// via libuv); sob carga — a suíte inteira rodando junto, ~20+ processos disputando disco/CPU — essa
+// I/O pode demorar mais do que 100 `setImmediate` levam para passar (às vezes só ~2ms de relógio
+// quando o event loop está ocioso). Contar tempo real em vez de tick corrige a flakiness raiz deste
+// arquivo (evidência no relatório da correção: 100 ticks/2ms decorridos com useMultiFileAuthState
+// ainda em voo).
+async function waitUntil(cond: () => boolean, timeoutMs = 5000): Promise<boolean> {
+	const start = Date.now()
+	while (!cond()) {
+		if (Date.now() - start > timeoutMs) return false
+		await new Promise((r) => setTimeout(r, 1))
+	}
+	return true
+}
+
+// cada teste ganha sua PRÓPRIA subpasta de authDir — nunca a mesma de outro teste. Motivo: todos
+// os testes usavam o mesmo 'baileys_auth_info' relativo (cwd fixo no arquivo todo), então uma
+// reconexão que sobrevive ao teste que a originou (ver correção em src/collector/core.ts) ficava
+// batendo no MESMO diretório/mutex de arquivo (mutex é module-level no baileys) que o teste seguinte
+// — ruído de I/O concorrente que também alimentava a flakiness.
+let authDirSeq = 0
+const nextAuthDir = () => `auth-${++authDirSeq}/baileys_auth_info`
+
 test('repassa cada evento p/ saveEvent (trilha NDJSON), router e onEvent', async () => {
 	const fake = makeFakeSocket()
 	const seen: Array<[string, unknown]> = []
 	const handle = startCollectorCore({
-		authDir: 'baileys_auth_info',
+		authDir: nextAuthDir(),
 		outboxPath: 'outbox.db',
 		logger: silentLogger,
 		baileysLogger: silentLogger,
@@ -128,7 +153,7 @@ test('connection.update: open dispara onStatus(connected,{me}) e busca metadata 
 	const statuses: Array<{ s: string; me?: string }> = []
 	const events: string[] = []
 	const handle = startCollectorCore({
-		authDir: 'baileys_auth_info',
+		authDir: nextAuthDir(),
 		outboxPath: 'outbox.db',
 		logger: silentLogger,
 		baileysLogger: silentLogger,
@@ -158,7 +183,7 @@ test('connection.update: connecting e qr propagam via onStatus/onQr', async () =
 	const statuses: string[] = []
 	let qr: string | null = null
 	const handle = startCollectorCore({
-		authDir: 'baileys_auth_info',
+		authDir: nextAuthDir(),
 		outboxPath: 'outbox.db',
 		logger: silentLogger,
 		baileysLogger: silentLogger,
@@ -179,10 +204,11 @@ test('connection.update: connecting e qr propagam via onStatus/onQr', async () =
 
 test('loggedOut limpa o authDir e reconecta', async () => {
 	const fake = makeFakeSocket()
-	const authDir = path.join(tmpDir, 'baileys_auth_info')
+	const authRel = nextAuthDir()
+	const authDir = path.join(tmpDir, authRel)
 	const statuses: string[] = []
 	const handle = startCollectorCore({
-		authDir: 'baileys_auth_info',
+		authDir: authRel,
 		outboxPath: 'outbox.db',
 		logger: silentLogger,
 		baileysLogger: silentLogger,
@@ -191,8 +217,8 @@ test('loggedOut limpa o authDir e reconecta', async () => {
 		makeSocket: makeFakeMakeSocket(fake.sock),
 	})
 
-	// useMultiFileAuthState cria o dir na conexão inicial — espera-o existir.
-	for (let i = 0; i < 100 && !fs.existsSync(authDir); i++) await new Promise((r) => setImmediate(r))
+	// useMultiFileAuthState cria o dir na conexão inicial — espera-o existir (tempo real, não ticks).
+	await waitUntil(() => fs.existsSync(authDir))
 	assert.ok(fs.existsSync(authDir), 'authDir deveria ter sido criado pelo connect inicial')
 
 	// DisconnectReason.loggedOut === 401
@@ -209,7 +235,7 @@ test('webhook != null liga o coletor: cria o outbox.db', async () => {
 	const fake = makeFakeSocket()
 	const outboxPath = path.join(tmpDir, 'collector-on.db')
 	const handle = startCollectorCore({
-		authDir: 'baileys_auth_info',
+		authDir: nextAuthDir(),
 		outboxPath: 'collector-on.db',
 		logger: silentLogger,
 		baileysLogger: silentLogger,
@@ -240,7 +266,7 @@ test('webhook == null mantém o coletor desligado (sem outbox.db)', async () => 
 	const fake = makeFakeSocket()
 	const outboxPath = path.join(tmpDir, 'collector-off.db')
 	const handle = startCollectorCore({
-		authDir: 'baileys_auth_info',
+		authDir: nextAuthDir(),
 		outboxPath: 'collector-off.db',
 		logger: silentLogger,
 		baileysLogger: silentLogger,
@@ -258,7 +284,7 @@ test('webhook == null mantém o coletor desligado (sem outbox.db)', async () => 
 test('stop() encerra o socket e sendMessage delega ao socket', async () => {
 	const fake = makeFakeSocket()
 	const handle = startCollectorCore({
-		authDir: 'baileys_auth_info',
+		authDir: nextAuthDir(),
 		outboxPath: 'outbox.db',
 		logger: silentLogger,
 		baileysLogger: silentLogger,
@@ -287,7 +313,7 @@ test('messages.upsert com /ban de admin aciona a remoção (fiação core → ba
 		},
 	})
 	const handle = startCollectorCore({
-		authDir: 'baileys_auth_info',
+		authDir: nextAuthDir(),
 		outboxPath: 'outbox.db',
 		logger: silentLogger,
 		baileysLogger: silentLogger,
@@ -323,7 +349,7 @@ test('messages.upsert com /admin on de admin aciona groupSettingUpdate (fiação
 		},
 	})
 	const handle = startCollectorCore({
-		authDir: 'baileys_auth_info',
+		authDir: nextAuthDir(),
 		outboxPath: 'outbox.db',
 		logger: silentLogger,
 		baileysLogger: silentLogger,
@@ -361,7 +387,7 @@ test('messages.upsert com /ban por telefone remove da COMUNIDADE (fiação core 
 		},
 	})
 	const handle = startCollectorCore({
-		authDir: 'baileys_auth_info',
+		authDir: nextAuthDir(),
 		outboxPath: 'outbox.db',
 		logger: silentLogger,
 		baileysLogger: silentLogger,
@@ -395,7 +421,7 @@ test('group-participants.update invalida o diretório (próximo comando refaz o 
 		},
 	})
 	const handle = startCollectorCore({
-		authDir: 'baileys_auth_info',
+		authDir: nextAuthDir(),
 		outboxPath: 'outbox.db',
 		logger: silentLogger,
 		baileysLogger: silentLogger,
@@ -440,7 +466,7 @@ test('messages.upsert com /kick remove só do grupo (fiação core → kick-comm
 		},
 	})
 	const handle = startCollectorCore({
-		authDir: 'baileys_auth_info',
+		authDir: nextAuthDir(),
 		outboxPath: 'outbox.db',
 		logger: silentLogger,
 		baileysLogger: silentLogger,
@@ -478,7 +504,7 @@ test('reentrada de quem foi removido NÃO dispara nova remoção (remoção é a
 		},
 	})
 	const handle = startCollectorCore({
-		authDir: 'baileys_auth_info',
+		authDir: nextAuthDir(),
 		outboxPath: 'outbox.db',
 		logger: silentLogger,
 		baileysLogger: silentLogger,
@@ -527,7 +553,7 @@ test('comando em grupo comum é apagado e reportado no grupo de log (fiação co
 		},
 	})
 	const handle = startCollectorCore({
-		authDir: 'baileys_auth_info',
+		authDir: nextAuthDir(),
 		outboxPath: 'outbox.db',
 		logger: silentLogger,
 		baileysLogger: silentLogger,
