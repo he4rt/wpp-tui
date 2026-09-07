@@ -31,6 +31,9 @@ Scan the QR code with WhatsApp > Settings > Linked Devices. On subsequent runs i
 
 ## Features
 
+Send `!ping` (or `/ping`) in a WhatsApp group to check whether the bot is responding.
+It replies `🏓 Pong! Estou online.` Any member can use it, in both TUI and headless mode.
+
 ### TUI (Ink + React)
 
 - **3 tabs**: Chat, Stats, Debug — cycle with `Tab` or `/chat`, `/stats`, `/debug`

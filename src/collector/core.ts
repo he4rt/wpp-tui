@@ -18,6 +18,7 @@ import { createEventRouter } from './event-router.js'
 import { createBanHandler } from './ban-command.js'
 import { createKickHandler } from './kick-command.js'
 import { createAdminHandler } from './admin-command.js'
+import { createPingHandler } from './ping-command.js'
 import { createCommunityDirectory } from './community-directory.js'
 import { resolveModerationConfig, type ModerationConfig } from './moderation-config.js'
 import { createModerationReporter, createLogGroupPublisher } from './moderation-report.js'
@@ -265,6 +266,11 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 			visibility,
 		})
 
+		const pingHandler = createPingHandler({
+			sock: activeSock,
+			logger: deps.logger.child({ component: 'ping' }),
+		})
+
 		activeSock.ev.process(async (events) => {
 			if (stopped) return
 
@@ -286,11 +292,12 @@ export function startCollectorCore(deps: CollectorCoreDeps): CollectorCoreHandle
 				void deletionWatcher.handle(events['messages.update'] as Parameters<typeof deletionWatcher.handle>[0])
 			}
 
-			// comandos de moderação: best-effort, não bloqueiam nem derrubam a coleta (handlers nunca lançam).
+			// comandos: best-effort, não bloqueiam nem derrubam a coleta (handlers nunca lançam).
 			if (events['messages.upsert']) {
 				void banHandler.handle(events['messages.upsert'] as Parameters<typeof banHandler.handle>[0])
 				void kickHandler.handle(events['messages.upsert'] as Parameters<typeof kickHandler.handle>[0])
 				void adminHandler.handle(events['messages.upsert'] as Parameters<typeof adminHandler.handle>[0])
+				void pingHandler.handle(events['messages.upsert'] as Parameters<typeof pingHandler.handle>[0])
 			}
 
 			if (events['creds.update']) {
